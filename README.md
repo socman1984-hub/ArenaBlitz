@@ -2,6 +2,9 @@
 
 A Smash TV-style twin-stick arena shooter for phones (it also works on desktop).
 
+**▶ Play now: https://socman1984-hub.github.io/ArenaBlitz/**
+Open the link on your phone, turn it sideways, and use "Add to Home Screen" to install it like an app.
+
 ## How to play
 - **Left thumb** (anywhere on the left half): move
 - **Right thumb** (anywhere on the right half): aim. The gun fires on its own all the time.
