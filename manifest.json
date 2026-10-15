@@ -1,0 +1,14 @@
+{
+  "name": "Arena Blitz",
+  "short_name": "Arena Blitz",
+  "description": "A Smash TV-style twin-stick arena shooter.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "fullscreen",
+  "orientation": "landscape",
+  "background_color": "#0d0b18",
+  "theme_color": "#0d0b18",
+  "icons": [
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}
