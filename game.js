@@ -5,13 +5,15 @@
 
 (() => {
 // ---------------------------------------------------------------- setup
-const W = 960, H = 600;          // arena size in world units
+const W = 880, H = 500;          // arena size in world units (wide and short to fill phone screens, so everything draws bigger)
 const WALL = 26, DOOR_W = 90;
+const SPR = 1.25;                // characters draw (and enemies collide) this much bigger than their art
 const canvas = document.getElementById('game');
 const ctx = canvas.getContext('2d');
 const isTouch = ('ontouchstart' in window) || navigator.maxTouchPoints > 0;
 
 let dpr = 1, scale = 1, offX = 0, offY = 0, sw = 0, sh = 0;
+let safe = { l: 0, r: 0, t: 0, b: 0 };   // iPhone notch / home bar insets, in CSS px
 
 const rand = (a, b) => a + Math.random() * (b - a);
 const randi = (a, b) => Math.floor(rand(a, b + 1));
@@ -208,7 +210,7 @@ function makeEnemy(type, x, y) {
   const hpMul = 1 + (round - 1) * 0.1;
   const spMul = Math.min(1.6, 1 + (round - 1) * 0.03);
   const e = {
-    type, x, y, r: d.r, color: d.color, score: d.score, cr: d.cr,
+    type, x, y, r: d.r * SPR, color: d.color, score: d.score, cr: d.cr,
     hp: Math.ceil(d.hp * hpMul), maxHp: 0,
     speed: d.speed * spMul * rand(0.9, 1.1),
     kx: 0, ky: 0, hitT: 0, bladeCD: 0, t: rand(0, 10), wob: rand(0, Math.PI * 2),
@@ -279,9 +281,9 @@ function killEnemy(e) {
     boss = null;
     for (const o of enemies) if (!o.dead && o.type !== 'boss') killEnemy(o);
   } else {
-    burst(e.x, e.y, e.color, e.r > 15 ? 22 : 12, 220);
+    burst(e.x, e.y, e.color, e.r > 18 ? 22 : 12, 220);
     Sound.boom(false);
-    shake = Math.max(shake, e.r > 15 ? 6 : 2);
+    shake = Math.max(shake, e.r > 18 ? 6 : 2);
     addText(e.x, e.y - e.r, '+' + pts, comboMult() > 1 ? '#ffd43b' : '#fff', 12, 0.6);
     if (Math.random() < 0.075 * (1 + 0.5 * lvl('magnet'))) dropPickup(e.x, e.y);
   }
@@ -386,11 +388,12 @@ function openShop() {
 
 function layoutShop() {
   const items = [...UPGRADES.map(u => ({ kind: 'up', u })), { kind: 'heal' }, { kind: 'go' }];
-  const cols = sw >= 560 ? 4 : 3, rows = Math.ceil(items.length / cols);
-  const top = 60, pad = 10, gap = 8;
-  const cw = Math.min(220, (sw - pad * 2 - gap * (cols - 1)) / cols);
-  const ch = Math.min(100, (sh - top - pad - gap * (rows - 1)) / rows);
-  const x0 = (sw - (cw * cols + gap * (cols - 1))) / 2;
+  const cols = sw - safe.l - safe.r >= 560 ? 4 : 3, rows = Math.ceil(items.length / cols);
+  const top = safe.t + 60, pad = 10, gap = 8;
+  const aw = sw - safe.l - safe.r;
+  const cw = Math.min(220, (aw - pad * 2 - gap * (cols - 1)) / cols);
+  const ch = Math.min(100, (sh - safe.b - top - pad - gap * (rows - 1)) / rows);
+  const x0 = safe.l + (aw - (cw * cols + gap * (cols - 1))) / 2;
   shopCards = items.map((it, i) => ({
     ...it, flash: 0,
     x: x0 + (i % cols) * (cw + gap), y: top + Math.floor(i / cols) * (ch + gap), w: cw, h: ch,
@@ -450,10 +453,11 @@ let abilityBtns = [], pauseBtn = {}, muteBtn = {};
 const btnPress = [0, 0, 0];
 
 function layout() {
-  const bs = isTouch ? 32 : 28;
-  abilityBtns = ABILITIES.map((a, i) => ({ x: sw / 2 + (i - 1) * (bs * 2 + 18), y: sh - bs - 12, r: bs }));
-  pauseBtn = { x: sw - 30, y: 28, r: 20 };
-  muteBtn = { x: sw - 78, y: 28, r: 20 };
+  const bs = isTouch ? 38 : 28;
+  abilityBtns = ABILITIES.map((a, i) => ({ x: sw / 2 + (i - 1) * (bs * 2 + 18), y: sh - safe.b - bs - 10, r: bs }));
+  const br = isTouch ? 24 : 20;
+  pauseBtn = { x: sw - safe.r - br - 10, y: safe.t + br + 8, r: br };
+  muteBtn = { x: pauseBtn.x - br * 2 - 12, y: pauseBtn.y, r: br };
 }
 
 function resize() {
@@ -461,13 +465,17 @@ function resize() {
   sw = window.innerWidth; sh = window.innerHeight;
   canvas.width = Math.round(sw * dpr); canvas.height = Math.round(sh * dpr);
   canvas.style.width = sw + 'px'; canvas.style.height = sh + 'px';
-  scale = Math.min(sw / W, sh / H);
-  offX = (sw - W * scale) / 2; offY = (sh - H * scale) / 2;
+  const cs = getComputedStyle(document.documentElement);
+  for (const k of ['l', 'r', 't', 'b']) safe[k] = parseFloat(cs.getPropertyValue('--safe-' + k)) || 0;
+  // Fit the arena between the notch and the opposite edge (the floor may run under the home bar).
+  const aw = sw - safe.l - safe.r, ah = sh - safe.t;
+  scale = Math.min(aw / W, ah / H);
+  offX = safe.l + (aw - W * scale) / 2; offY = safe.t + (ah - H * scale) / 2;
   layout();
   if (state === 'shop') layoutShop();
 }
 window.addEventListener('resize', resize);
-window.addEventListener('orientationchange', () => setTimeout(resize, 200));
+window.addEventListener('orientationchange', () => { setTimeout(resize, 200); setTimeout(resize, 600); });
 
 const hitBtn = (b, x, y, pad = 10) => d2(b.x, b.y, x, y) < (b.r + pad) * (b.r + pad);
 
@@ -655,7 +663,7 @@ function updatePlayer(dt) {
       const a = base + (count > 1 ? (k / (count - 1) - 0.5) * arc : 0) + rand(-w.jitter, w.jitter);
       bullets.push({
         x: p.x + Math.cos(base) * 14, y: p.y - 2 + Math.sin(base) * 14,   // close in, so huggers still get hit
-        vx: Math.cos(a) * 640, vy: Math.sin(a) * 640, r: 4, dmg, life: 1.2,
+        vx: Math.cos(a) * 640, vy: Math.sin(a) * 640, r: 7, dmg, life: 1.2,
         pierce: lvl('pierce'), hits: null,
       });
     }
@@ -717,7 +725,7 @@ function updateEnemies(dt) {
     e.x = clamp(e.x, WALL + e.r, W - WALL - e.r);
     e.y = clamp(e.y, WALL + e.r, H - WALL - e.r);
 
-    if (d2(e.x, e.y, p.x, p.y) < (e.r + p.r - 3) ** 2) hurtPlayer();
+    if (d2(e.x, e.y, p.x, p.y) < (e.r / SPR + p.r - 3) ** 2) hurtPlayer();   // touch range uses the un-enlarged size, to stay forgiving
   }
 
   // keep enemies from stacking on top of each other
@@ -1210,6 +1218,7 @@ function drawOverlord(e, fl) {
 
 function drawEnemy(e) {
   const fl = e.hitT > 0;
+  ctx.save(); ctx.translate(e.x, e.y); ctx.scale(SPR, SPR); ctx.translate(-e.x, -e.y);
   switch (e.type) {
     case 'grunt': drawBrute(e, fl); break;
     case 'runner': drawSkitter(e, fl); break;
@@ -1218,8 +1227,9 @@ function drawEnemy(e) {
     case 'tank': drawJuggernaut(e, fl); break;
     case 'boss': drawOverlord(e, fl); break;
   }
+  ctx.restore();
   if (e.type !== 'boss' && e.hp < e.maxHp && e.maxHp > 3) {
-    const wdt = e.r * 2, top = e.y - e.r - (e.type === 'grunt' ? 22 : 10);
+    const wdt = e.r * 2, top = e.y - e.r - (e.type === 'grunt' ? 26 : 10);
     ctx.fillStyle = 'rgba(0,0,0,0.6)'; ctx.fillRect(e.x - wdt / 2, top, wdt, 4);
     ctx.fillStyle = '#7CFC00'; ctx.fillRect(e.x - wdt / 2, top, wdt * Math.max(0, e.hp / e.maxHp), 4);
   }
@@ -1254,6 +1264,7 @@ function drawPlayer() {
   const blink = p.inv > 0 && Math.floor(time * 18) % 2 === 0;
   const a = Math.atan2(p.ay, p.ax);
   const face = p.ax < 0 ? -1 : 1;
+  ctx.save(); ctx.translate(p.x, p.y); ctx.scale(SPR, SPR); ctx.translate(-p.x, -p.y);
   shadow(p.x, p.y + 15, 13, 5);
   if (!blink) {
     const step = p.moving ? Math.sin(p.walk) : 0;
@@ -1289,6 +1300,7 @@ function drawPlayer() {
     if (!gunBehind) drawPlayerGun(a);
     ctx.restore();
   }
+  ctx.restore();
   if (p.blades > 0) {
     const fade = p.blades < 1.5 && Math.floor(time * 12) % 2 === 0;
     const nb = 4 + lvl('blades');
@@ -1390,12 +1402,12 @@ function drawHeart(x, y, s, filled) {
 
 function drawHud() {
   const p = player;
-  const left = 14;
-  label(`SCORE ${score.toLocaleString()}`, left, 22, 18);
-  for (let i = 0; i < p.maxHp; i++) drawHeart(left + 9 + i * 22, 38, 18, i < p.hp);
-  drawGem(left + 7, 70, 7);
-  label(`${credits}`, left + 19, 70, 15, '#4dfff0');
-  let y = 92;
+  const left = safe.l + 14, top = safe.t;
+  label(`SCORE ${score.toLocaleString()}`, left, top + 22, 18);
+  for (let i = 0; i < p.maxHp; i++) drawHeart(left + 9 + i * 22, top + 38, 18, i < p.hp);
+  drawGem(left + 7, top + 70, 7);
+  label(`${credits}`, left + 19, top + 70, 15, '#4dfff0');
+  let y = top + 92;
   if (combo >= 5) { label(`x${comboMult()} COMBO ${combo}`, left, y, 14, '#ffd43b'); y += 20; }
   if (p.weapon !== 'basic') {
     const w = WEAPONS[p.weapon];
@@ -1404,12 +1416,12 @@ function drawHud() {
     ctx.fillStyle = '#fff'; ctx.fillRect(left + 62, y - 3, 60 * Math.max(0, p.weaponT / 10), 6);
   }
 
-  label(`ROUND ${round}`, sw / 2, 20, 18, '#fff', 'center');
+  label(`ROUND ${round}`, sw / 2, top + 20, 18, '#fff', 'center');
   const left2 = spawnQueue.length + enemies.length;
-  if (roundPhase !== 'clear') label(`${left2} enemies left`, sw / 2, 40, 12, 'rgba(255,255,255,0.7)', 'center', 'normal');
+  if (roundPhase !== 'clear') label(`${left2} enemies left`, sw / 2, top + 40, 12, 'rgba(255,255,255,0.7)', 'center', 'normal');
 
   if (boss && !boss.dead) {
-    const bw = Math.min(360, sw * 0.5), bx = sw / 2 - bw / 2, by = 54;
+    const bw = Math.min(360, sw * 0.5), bx = sw / 2 - bw / 2, by = top + 54;
     ctx.fillStyle = 'rgba(0,0,0,0.6)'; ctx.fillRect(bx - 2, by - 2, bw + 4, 14);
     ctx.fillStyle = '#ff3366'; ctx.fillRect(bx, by, bw * Math.max(0, boss.hp / boss.maxHp), 10);
     label('BOSS', bx - 8, by + 5, 12, '#ff3366', 'right');
@@ -1433,7 +1445,7 @@ function drawHud() {
     circle(b.x, b.y, b.r * pr - 5, ready ? a.color + '55' : 'transparent');
     drawAbilityIcon(a.id, b.x, b.y - 4, b.r * 0.42, a.color);
     ctx.globalAlpha = 1;
-    label(a.name, b.x, b.y + b.r * 0.5, 9, '#fff', 'center');
+    label(a.name, b.x, b.y + b.r * 0.5, isTouch ? 10 : 9, '#fff', 'center');
     circle(b.x + b.r * 0.72, b.y - b.r * 0.72, 10, ready ? '#fff' : '#555');
     ctx.fillStyle = '#111'; ctx.font = 'bold 12px system-ui, sans-serif'; ctx.textAlign = 'center';
     ctx.fillText(charges[i], b.x + b.r * 0.72, b.y - b.r * 0.72 + 1);
@@ -1450,14 +1462,14 @@ function drawGem(x, y, s) {
 
 function drawShop() {
   ctx.fillStyle = 'rgba(8,6,16,0.9)'; ctx.fillRect(0, 0, sw, sh);
-  label('UPGRADE SHOP', sw / 2, 20, 22, '#ffe066', 'center');
+  label('UPGRADE SHOP', sw / 2, safe.t + 20, 22, '#ffe066', 'center');
   const ct = `${credits}`;
   ctx.font = 'bold 17px system-ui, sans-serif';
   const tw = ctx.measureText(ct).width;
-  drawGem(sw / 2 - tw / 2 - 10, 44, 7);
-  label(ct, sw / 2 - tw / 2 + 2, 44, 17, '#4dfff0');
-  if (shopMsg) label(shopMsg.text, sw - 14, 44, 13, shopMsg.color, 'right');
-  label(`Next: round ${round + 1}`, 14, 44, 12, 'rgba(255,255,255,0.55)', 'left', 'normal');
+  drawGem(sw / 2 - tw / 2 - 10, safe.t + 44, 7);
+  label(ct, sw / 2 - tw / 2 + 2, safe.t + 44, 17, '#4dfff0');
+  if (shopMsg) label(shopMsg.text, sw - safe.r - 14, safe.t + 44, 13, shopMsg.color, 'right');
+  label(`Next: round ${round + 1}`, safe.l + 14, safe.t + 44, 12, 'rgba(255,255,255,0.55)', 'left', 'normal');
 
   for (const c of shopCards) {
     let title, desc, icon, cost = 0, can = false, maxed = false, pips = null;
