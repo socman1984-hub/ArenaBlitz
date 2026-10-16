@@ -125,17 +125,19 @@ const UPGRADES = [
   { id: 'over',     icon: '🔥', name: 'OVERCHARGE',     desc: '+10% damage, no limit',     max: Infinity, cost: 80, step: 40 },
 ];
 
-// Gear: bought in the shop, lasts until the next shop opens. Price grows with the round.
+// Gear: bought in the shop, kicks in when the next round's fight starts and runs on a
+// timer, just like a pickup. Price grows with the round.
 const GEAR = [
-  { id: 'spread', icon: '🔱', name: 'SPREAD GUN',  desc: 'Fire 5 shots at once',       cost: 30, per: 3, gun: true },
-  { id: 'rapid',  icon: '🔫', name: 'RAPID FIRE',  desc: 'More than twice as fast',    cost: 25, per: 3, gun: true },
-  { id: 'laser',  icon: '🔴', name: 'LASER',       desc: 'Hard hits, pierces 3',       cost: 35, per: 4, gun: true },
-  { id: 'shield', icon: '🛡️', name: 'FORCE FIELD', desc: 'Blocks 2 hits each round',   cost: 30, per: 3 },
-  { id: 'drone',  icon: '🤖', name: 'BUDDY DRONE', desc: 'Helper that shoots for you', cost: 35, per: 4 },
-  { id: 'pack',   icon: '🔋', name: 'POWER PACK',  desc: '+1 of every power a round',  cost: 25, per: 3 },
-  { id: 'gems',   icon: '💎', name: 'GEM DOUBLER', desc: 'Double ◆ from kills',         cost: 40, per: 2 },
+  { id: 'spread', icon: '🔱', name: 'SPREAD GUN',  desc: 'Fire 5 shots at once',       cost: 12, per: 1.5, gun: true },
+  { id: 'rapid',  icon: '🔫', name: 'RAPID FIRE',  desc: 'More than twice as fast',    cost: 10, per: 1.5, gun: true },
+  { id: 'laser',  icon: '🔴', name: 'LASER',       desc: 'Hard hits, pierces 3',       cost: 15, per: 2, gun: true },
+  { id: 'shield', icon: '🛡️', name: 'FORCE FIELD', desc: 'Blocks up to 2 hits',        cost: 12, per: 1.5 },
+  { id: 'drone',  icon: '🤖', name: 'BUDDY DRONE', desc: 'Helper that shoots for you', cost: 15, per: 2 },
+  { id: 'gems',   icon: '💎', name: 'GEM DOUBLER', desc: 'Double ◆ from kills',         cost: 12, per: 1 },
+  { id: 'pack',   icon: '🔋', name: 'POWER PACK',  desc: '+1 of every power',          cost: 20, per: 2, once: true },
 ];
-const gearCost = g => g.cost + g.per * round;
+const gearCost = g => Math.round(g.cost + g.per * round);
+const buffTime = () => 10 + 4 * lvl('surge');   // same length as a gun pickup
 
 const ABILITIES = [
   { id: 'blast',    name: 'BLAST',    max: 1, color: '#ff5533', keys: ['1', 'q', ' '] },
@@ -216,7 +218,8 @@ let best = store.get('arena_best', 0);
 let newBest = false;
 let credits = 0, levels = {}, flawless = true;
 let shopCards = [], shopMsg = null, shopTab = 'up', shopTabs = [];
-let gear = new Set(), drone = { a: 0, t: 0 };
+let gear = new Set(), drone = { a: 0, t: 0 };   // gear = bought for the next round
+let buffs = { shield: 0, drone: 0, gems: 0 }, buffMax = 10;   // seconds left on bought buffs
 let twist = null, lastTwist = null, forcedTwist = null, lastLayout = null, themeIdx = 0;
 let pillars = [], mines = [], warps = [], strikes = [], puddles = [], seen = new Set();
 
@@ -227,10 +230,10 @@ const healCost = () => 15 + round * 2;
 function newGame() {
   player = {
     x: W / 2, y: H / 2, r: 13, hp: 5, maxHp: 5, inv: 0,
-    fireT: 0, weapon: 'basic', baseWeapon: 'basic', weaponT: 0, weaponMax: 10, shield: 0, ax: 1, ay: 0,
+    fireT: 0, weapon: 'basic', weaponT: 0, weaponMax: 10, shield: 0, ax: 1, ay: 0,
     blades: 0, bladeA: 0, walk: 0, muzzle: 0, moving: false,
   };
-  credits = 0; levels = {}; gear = new Set(); shopTab = 'up';
+  credits = 0; levels = {}; gear = new Set(); shopTab = 'up'; buffs = { shield: 0, drone: 0, gems: 0 };
   bullets = []; ebullets = []; enemies = []; particles = [];
   pickups = []; texts = []; missiles = []; effects = [];
   pillars = []; mines = []; warps = [];
@@ -257,7 +260,7 @@ function startRound(n) {
   roundPhase = 'intro'; phaseT = 2;
   flawless = true;
   charges = ABILITIES.map(a => a.max + (a.id === 'blast' ? lvl('blast') : 0) + (gear.has('pack') ? 1 : 0));
-  applyGear();
+  buffs = { shield: 0, drone: 0, gems: 0 }; player.shield = 0;
   if (n > 1 && lvl('regen')) player.hp = Math.min(player.maxHp, player.hp + lvl('regen'));
   const fresh = [...new Set(spawnQueue)].filter(t => INTRO[t] && !seen.has(t));
   fresh.forEach(t => seen.add(t));
@@ -268,12 +271,23 @@ function startRound(n) {
   if (isBoss) Sound.jingle([196, 185, 175, 165], 160);
 }
 
-function applyGear() {
-  const p = player;
+// Switch on whatever was bought in the shop. Called when the fight starts.
+function activateGear() {
+  if (!gear.size) return;
+  const p = player, t = buffTime();
   const gun = GEAR.find(g => g.gun && gear.has(g.id));
-  p.baseWeapon = gun ? gun.id : 'basic';
-  if (p.weaponT <= 0) p.weapon = p.baseWeapon;
-  p.shield = gear.has('shield') ? 2 : 0;
+  if (gun) { p.weapon = gun.id; p.weaponT = p.weaponMax = t; }
+  buffMax = t;
+  for (const id of ['shield', 'drone', 'gems']) if (gear.has(id)) buffs[id] = t;
+  if (gear.has('shield')) p.shield = 2;
+  gear.clear();
+  Sound.power();
+  addText(p.x, p.y - 34, 'GEAR ON!', '#7CFC00', 16, 1);
+}
+
+function updateBuffs(dt) {
+  for (const id in buffs) if (buffs[id] > 0) buffs[id] = Math.max(0, buffs[id] - dt);
+  if (buffs.shield <= 0) player.shield = 0;
 }
 
 function pickTwist(n, isBoss) {
@@ -389,7 +403,7 @@ function killEnemy(e) {
   combo++; comboT = 2;
   const pts = e.score * comboMult();
   score += pts;
-  credits += e.cr * (twist === 'cash' ? 2 : 1) * (gear.has('gems') ? 2 : 1);
+  credits += e.cr * (twist === 'cash' ? 2 : 1) * (buffs.gems > 0 ? 2 : 1);
   if (e.type === 'boss') {
     burst(e.x, e.y, e.color, 90, 450, 7);
     burst(e.x, e.y, '#fff', 40, 300, 5);
@@ -511,7 +525,6 @@ function useAbility(i) {
 // ---------------------------------------------------------------- upgrade shop
 function openShop() {
   state = 'shop';
-  gear.clear();   // gear only lasts until the next shop
   shopMsg = null;
   sticks.left = sticks.right = null;
   bullets.length = 0; missiles.length = 0;
@@ -525,7 +538,7 @@ function layoutShop() {
     : [...GEAR.map(g => ({ kind: 'gear', g })), { kind: 'heal' }, { kind: 'go' }];
   const aw = sw - safe.l - safe.r, pad = 10, gap = 8;
   const tw = Math.min(200, (aw - pad * 2 - gap) / 2), tx = safe.l + aw / 2 - tw - gap / 2;
-  shopTabs = [{ id: 'up', label: 'UPGRADES', sub: 'keep forever' }, { id: 'gear', label: 'GEAR', sub: 'next 2 rounds' }]
+  shopTabs = [{ id: 'up', label: 'UPGRADES', sub: 'keep forever' }, { id: 'gear', label: 'GEAR', sub: `next round · ${10 + 4 * lvl('surge')}s each` }]
     .map((t, i) => ({ ...t, x: tx + i * (tw + gap), y: safe.t + 58, w: tw, h: 30 }));
   const top = safe.t + 96;
   let cols = 3;
@@ -554,12 +567,12 @@ function buy(c) {
   if (c.kind === 'go') { state = 'play'; startRound(round + 1); return; }
   if (c.kind === 'gear') {
     const g = c.g;
-    if (gear.has(g.id)) { shopSay('Already equipped'); Sound.denied(); return; }
+    if (gear.has(g.id)) { shopSay('Already bought'); Sound.denied(); return; }
     if (g.gun && GEAR.some(o => o.gun && gear.has(o.id))) { shopSay('You can only carry one gun'); Sound.denied(); return; }
     if (credits < gearCost(g)) { shopSay('Not enough ◆'); Sound.denied(); return; }
     credits -= gearCost(g);
     gear.add(g.id);
-    shopSay(`${g.name} equipped for 2 rounds`, '#7CFC00');
+    shopSay(g.once ? `${g.name} ready for next round` : `${g.name}: ${buffTime()}s next round`, '#7CFC00');
   } else if (c.kind === 'heal') {
     if (player.hp >= player.maxHp) { shopSay('Already at full health'); Sound.denied(); return; }
     if (credits < healCost()) { shopSay('Not enough ◆'); Sound.denied(); return; }
@@ -804,6 +817,7 @@ document.addEventListener('visibilitychange', () => {
 function update(dt) {
   time += dt;
   updateRound(dt);
+  updateBuffs(dt);
   updatePlayer(dt);
   updateEnemies(dt);
   updateShots(dt);
@@ -822,7 +836,7 @@ function updateRound(dt) {
   for (const d of doors) d.flash = Math.max(0, d.flash - dt);
   if (roundPhase === 'intro') {
     phaseT -= dt;
-    if (phaseT <= 0) roundPhase = 'fight';
+    if (phaseT <= 0) { roundPhase = 'fight'; activateGear(); }
   } else if (roundPhase === 'fight') {
     spawnT -= dt;
     const cap = 30 + round * 3;
@@ -897,7 +911,7 @@ function updatePlayer(dt) {
   if (al > 0.001) { p.ax = ax / al; p.ay = ay / al; }
 
   // always shooting
-  if (p.weaponT > 0) { p.weaponT -= dt; if (p.weaponT <= 0) p.weapon = p.baseWeapon; }
+  if (p.weaponT > 0) { p.weaponT -= dt; if (p.weaponT <= 0) p.weapon = 'basic'; }
   const w = WEAPONS[twist === 'overdrive' && p.weapon === 'basic' ? 'rapid' : p.weapon];
   const count = w.count + lvl('multi'), arc = w.arc + lvl('multi') * 0.14;
   const dmg = w.dmg * dmgMult(), spd = w.speed || 640;
@@ -920,7 +934,7 @@ function updatePlayer(dt) {
   if (p.inv > 0) p.inv -= dt;
 
   // buddy drone: circles you and plinks the nearest enemy
-  if (gear.has('drone')) {
+  if (buffs.drone > 0) {
     drone.a += dt * 2.2;
     drone.x = p.x + Math.cos(drone.a) * 42; drone.y = p.y + Math.sin(drone.a) * 30 - 10;
     drone.t -= dt;
@@ -1854,7 +1868,7 @@ function drawGearFx() {
     ctx.strokeStyle = `rgba(95,225,255,${0.45 + 0.2 * Math.sin(time * 6)})`; ctx.lineWidth = p.shield > 1 ? 3 : 1.5;
     ctx.beginPath(); ctx.arc(p.x, p.y - 4, 28, 0, Math.PI * 2); ctx.stroke();
   }
-  if (gear.has('drone') && drone.x !== undefined) {
+  if (buffs.drone > 0 && drone.x !== undefined && (buffs.drone > 1.5 || Math.floor(time * 10) % 2)) {
     shadow(drone.x, drone.y + 22, 7, 3);
     circle(drone.x, drone.y, 9, '#4caf50');
     circle(drone.x - 2.5, drone.y - 2.5, 3, 'rgba(255,255,255,0.45)');
@@ -2061,10 +2075,14 @@ function drawHud() {
     }
     y += 20;
   }
-  const gearIcons = GEAR.filter(g => gear.has(g.id) && !g.gun).map(g => g.icon).join(' ');
-  if (gearIcons) {   // what you bought this stretch
+  for (const g of GEAR) {   // bought buffs still running, each with its timer
+    const t = buffs[g.id];
+    if (!(t > 0)) continue;
     ctx.font = '13px system-ui, sans-serif'; ctx.textAlign = 'left'; ctx.textBaseline = 'middle'; ctx.fillStyle = '#fff';
-    ctx.fillText(gearIcons, left, y);
+    ctx.fillText(g.icon, left, y);
+    ctx.fillStyle = 'rgba(255,255,255,0.2)'; ctx.fillRect(left + 22, y - 3, 60, 6);
+    ctx.fillStyle = '#7CFC00'; ctx.fillRect(left + 22, y - 3, 60 * t / buffMax, 6);
+    y += 18;
   }
 
   const mid = offX + W * scale / 2;
@@ -2150,6 +2168,7 @@ function drawShop() {
       const g = c.g;
       title = g.name; desc = g.desc; icon = g.icon;
       owned = gear.has(g.id); cost = gearCost(g);
+      if (!g.once) desc += ` (${buffTime()}s)`;
       can = !owned && !(g.gun && hasGun) && credits >= cost;
     } else {
       const u = c.u;
@@ -2180,7 +2199,7 @@ function drawShop() {
       }
     }
     if (maxed) label('MAX', c.x + c.w - 10, c.y + c.h - 12, 13, '#7CFC00', 'right');
-    else if (owned) label('EQUIPPED', c.x + c.w - 10, c.y + c.h - 12, 12, '#7CFC00', 'right');
+    else if (owned) label('BOUGHT', c.x + c.w - 10, c.y + c.h - 12, 12, '#7CFC00', 'right');
     else {
       ctx.font = 'bold 14px system-ui, sans-serif';
       const cw2 = ctx.measureText(`${cost}`).width;

@@ -62,16 +62,16 @@ The **Upgrade Shop** opens after every 2 rounds. It has two tabs.
 | Power Surge | gun pickups last +4s | 3 |
 | Overcharge | +10% damage | no limit |
 
-**GEAR** lasts until the next shop (2 rounds). The price goes up with the round number:
+**GEAR** works like a pickup you choose: it switches on when the next round's fight starts and lasts 10 seconds (+4s per Power Surge level). The price goes up with the round number:
 
 | Gear | Effect |
 |---|---|
-| Spread Gun / Rapid Fire / Laser | your gun for both rounds (one at a time); gun pickups still work on top |
-| Force Field | blocks 2 hits each round |
+| Spread Gun / Rapid Fire / Laser | that gun for the timer (one gun per shop visit) |
+| Force Field | blocks up to 2 hits while it lasts |
 | Buddy Drone | a helper that circles you and shoots the nearest enemy |
-| Power Pack | +1 of every power each round |
-| Gem Doubler | double ◆ from kills |
-| Med Kit | refill all hearts |
+| Gem Doubler | double ◆ from kills while it lasts |
+| Power Pack | +1 of every power for the next round |
+| Med Kit | refill all hearts right away |
 
 Upgrades and gear reset when you start a new game.
 

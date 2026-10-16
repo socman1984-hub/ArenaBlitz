@@ -1,6 +1,14 @@
 {
-  "version": "1.6.0",
+  "version": "1.6.1",
   "releases": [
+    {
+      "version": "1.6.1",
+      "date": "Oct 16, 2026",
+      "notes": [
+        "Gear from the shop now works like a pickup: it turns on when the next round starts and lasts 10 seconds",
+        "Gear is cheaper to match"
+      ]
+    },
     {
       "version": "1.6.0",
       "date": "Oct 16, 2026",
