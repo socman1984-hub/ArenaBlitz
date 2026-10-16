@@ -85,7 +85,13 @@ python -m http.server 8080 --bind 0.0.0.0
    It launches full screen, in landscape, and works offline.
 3. For the App Store or Google Play, wrap the same files with [Capacitor](https://capacitorjs.com/).
 
+## Versions and updates
+- The game shows its version number and what's new each time it opens.
+- It checks for a new version every minute and whenever you come back to it. If there is one, it reloads by itself on the title screen. If you're mid-game, it waits until game over and installs when you tap to continue, so you never lose a run.
+- To release an update: add an entry at the top of `version.json` and change its `"version"` to match. The version number and release notes live only there.
+
 ## Files
 - `game.js`: all the game code (enemies, weapons, powers, rounds, drawing, touch controls, sound)
 - `index.html`: the page that hosts the game canvas
+- `version.json`: the version number and release notes
 - `manifest.json`, `sw.js`, `icon.svg`: let the game install to your home screen and run offline

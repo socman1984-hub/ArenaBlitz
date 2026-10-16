@@ -177,7 +177,7 @@ const INTRO = {
 };
 
 // ---------------------------------------------------------------- state
-let state = 'title';      // title | play | shop | over
+let state = 'title';      // notes | title | play | shop | over
 let paused = false;
 let player, bullets, ebullets, enemies, particles, pickups, texts, missiles, effects, boss;
 let round = 0, score = 0, combo = 0, comboT = 0;
@@ -642,8 +642,9 @@ function goFullscreen() {
 
 // Returns true when the tap was consumed by UI rather than a stick.
 function handleTap(x, y) {
+  if (state === 'notes') { state = 'title'; return true; }
   if (state === 'title') { goFullscreen(); newGame(); return true; }
-  if (state === 'over') { if (overT > 1) newGame(); return true; }
+  if (state === 'over') { if (overT > 1) { if (updateReady) location.reload(); else newGame(); } return true; }
   if (state === 'shop') {
     for (const c of shopCards) {
       if (x >= c.x && x <= c.x + c.w && y >= c.y && y <= c.y + c.h) { buy(c); break; }
@@ -704,8 +705,9 @@ window.addEventListener('keydown', e => {
   keys[k] = true;
   Sound.init();
   if (k.startsWith('arrow')) mouse.active = false;
+  if (state === 'notes' && (k === 'enter' || k === ' ')) { state = 'title'; return; }
   if (state === 'title' && (k === 'enter' || k === ' ')) { newGame(); return; }
-  if (state === 'over' && (k === 'enter' || k === ' ') && overT > 1) { newGame(); return; }
+  if (state === 'over' && (k === 'enter' || k === ' ') && overT > 1) { if (updateReady) location.reload(); else newGame(); return; }
   if (state === 'shop' && k === 'enter') { buy(shopCards[shopCards.length - 1]); return; }
   if (state !== 'play') return;
   if (k === 'p' || k === 'escape') { paused = !paused; return; }
@@ -1842,7 +1844,7 @@ function render() {
   const k = scale * dpr;
   ctx.setTransform(k, 0, 0, k, (offX + sx * scale) * dpr, (offY + sy * scale) * dpr);
   drawArena();
-  if (state !== 'title') {
+  if (state !== 'title' && state !== 'notes') {
     drawHazards();
     drawPickups();
     for (const e of enemies) drawEnemy(e);
@@ -1866,6 +1868,20 @@ function render() {
     return;
   }
 
+  if (state === 'notes' && release) {
+    const pulse = 0.6 + 0.4 * Math.sin(time * 4);
+    drawCenterPanel([
+      { text: 'ARENA BLITZ', size: Math.min(40, sw / 14), color: '#ff3df0' },
+      { text: `Version ${release.version}  ·  ${release.date}`, size: 14, color: '#9be7ff', weight: 'normal' },
+      { gap: 14 },
+      { text: "WHAT'S NEW", size: 18, color: '#ffe066' },
+      ...release.notes.map(n => ({ text: '• ' + n, size: 14, weight: 'normal' })),
+      { gap: 18 },
+      { text: isTouch ? 'TAP TO CONTINUE' : 'CLICK OR PRESS ENTER', size: 18, color: `rgba(255,224,102,${pulse})` },
+    ]);
+    return;
+  }
+
   if (state === 'title') {
     const pulse = 0.6 + 0.4 * Math.sin(time * 4);
     drawCenterPanel([
@@ -1882,6 +1898,7 @@ function render() {
       { gap: 14 },
       { text: best ? `BEST ${best.toLocaleString()}` : '', size: 14, color: '#ffd43b' },
     ]);
+    if (runningVersion) label(`v${runningVersion}`, safe.l + 12, sh - safe.b - 14, 12, 'rgba(255,255,255,0.45)', 'left', 'normal');
     return;
   }
 
@@ -1916,6 +1933,7 @@ function render() {
       { text: newBest ? 'NEW BEST!' : `BEST ${best.toLocaleString()}`, size: 16, color: '#ffd43b' },
       { gap: 20 },
       { text: overT > 1 ? (isTouch ? 'TAP TO PLAY AGAIN' : 'CLICK OR PRESS ENTER') : '', size: 20, color: '#ffe066' },
+      { text: updateReady ? `Update ready: v${latestVersion} installs when you continue` : '', size: 13, color: '#7CFC00', weight: 'normal' },
     ]);
   }
 }
@@ -1937,6 +1955,27 @@ function frame(now) {
   render();
   requestAnimationFrame(frame);
 }
+
+// ---------------------------------------------------------------- version & auto-update
+// version.json is the one place the version number and release notes live.
+let release = null, runningVersion = null, latestVersion = null, updateReady = false;
+function checkVersion() {
+  fetch('version.json', { cache: 'no-store' }).then(r => r.json()).then(v => {
+    latestVersion = v.version;
+    if (!runningVersion) {
+      runningVersion = v.version;
+      release = v.releases && v.releases[0];
+      if (state === 'title' && release) state = 'notes';
+    } else if (v.version !== runningVersion) {
+      updateReady = true;
+      // Never reload in the middle of a run: wait for the title screen or game over.
+      if (state === 'title' || state === 'notes') location.reload();
+    }
+  }).catch(() => {});
+}
+checkVersion();
+setInterval(checkVersion, 60000);
+document.addEventListener('visibilitychange', () => { if (!document.hidden) checkVersion(); });
 
 resize();
 requestAnimationFrame(frame);
