@@ -599,12 +599,14 @@ let mouse = { x: 0, y: 0, active: false };
 let abilityBtns = [], pauseBtn = {}, muteBtn = {};
 const btnPress = [0, 0, 0];
 
+// All buttons live in a column on the right edge, beside the arena, so they never cover the action.
+const SIDE_W = 78;
 function layout() {
-  const bs = isTouch ? 38 : 28;
-  abilityBtns = ABILITIES.map((a, i) => ({ x: sw / 2 + (i - 1) * (bs * 2 + 18), y: sh - safe.b - bs - 10, r: bs }));
-  const br = isTouch ? 24 : 20;
-  pauseBtn = { x: sw - safe.r - br - 10, y: safe.t + br + 8, r: br };
-  muteBtn = { x: pauseBtn.x - br * 2 - 12, y: pauseBtn.y, r: br };
+  const cx = sw - safe.r - SIDE_W / 2;
+  const bs = Math.min(32, (sh - safe.t - safe.b - 120) / 6.6);   // shrink a little on very short screens
+  abilityBtns = ABILITIES.map((a, i) => ({ x: cx, y: sh - safe.b - 10 - bs - (ABILITIES.length - 1 - i) * (bs * 2 + 10), r: bs }));
+  pauseBtn = { x: cx, y: safe.t + 28, r: 20 };
+  muteBtn = { x: cx, y: pauseBtn.y + 48, r: 20 };
 }
 
 function resize() {
@@ -615,7 +617,7 @@ function resize() {
   const cs = getComputedStyle(document.documentElement);
   for (const k of ['l', 'r', 't', 'b']) safe[k] = parseFloat(cs.getPropertyValue('--safe-' + k)) || 0;
   // Fit the arena between the notch and the opposite edge (the floor may run under the home bar).
-  const aw = sw - safe.l - safe.r, ah = sh - safe.t;
+  const aw = sw - safe.l - safe.r - SIDE_W, ah = sh - safe.t;
   scale = Math.min(aw / W, ah / H);
   offX = safe.l + (aw - W * scale) / 2; offY = safe.t + (ah - H * scale) / 2;
   layout();
@@ -1658,13 +1660,14 @@ function drawHud() {
     ctx.fillStyle = '#fff'; ctx.fillRect(left + 62, y - 3, 60 * Math.max(0, p.weaponT / 10), 6);
   }
 
-  label(`ROUND ${round}`, sw / 2, top + 20, 18, '#fff', 'center');
+  const mid = offX + W * scale / 2;
+  label(`ROUND ${round}`, mid, top + 20, 18, '#fff', 'center');
   const left2 = spawnQueue.length + warps.length + enemies.length;
-  if (roundPhase !== 'clear') label(`${left2} enemies left`, sw / 2, top + 40, 12, 'rgba(255,255,255,0.7)', 'center', 'normal');
-  if (twist && roundPhase !== 'clear') label(TWISTS[twist].name, sw / 2, top + 58, 12, TWISTS[twist].color, 'center');
+  if (roundPhase !== 'clear') label(`${left2} enemies left`, mid, top + 40, 12, 'rgba(255,255,255,0.7)', 'center', 'normal');
+  if (twist && roundPhase !== 'clear') label(TWISTS[twist].name, mid, top + 58, 12, TWISTS[twist].color, 'center');
 
   if (boss && !boss.dead) {
-    const bw = Math.min(360, sw * 0.5), bx = sw / 2 - bw / 2, by = top + 54;
+    const bw = Math.min(360, sw * 0.5), bx = mid - bw / 2, by = top + 54;
     ctx.fillStyle = 'rgba(0,0,0,0.6)'; ctx.fillRect(bx - 2, by - 2, bw + 4, 14);
     ctx.fillStyle = '#ff3366'; ctx.fillRect(bx, by, bw * Math.max(0, boss.hp / boss.maxHp), 10);
     label('BOSS', bx - 8, by + 5, 12, '#ff3366', 'right');
@@ -1813,7 +1816,7 @@ function drawSticks() {
       ctx.beginPath(); ctx.arc(s.ox, s.oy, STICK_R, 0, Math.PI * 2); ctx.stroke();
       circle(s.ox + s.vx * STICK_R, s.oy + s.vy * STICK_R, 24, side === 'left' ? 'rgba(58,141,255,0.5)' : 'rgba(255,224,102,0.5)');
     } else if (hint) {
-      const x = side === 'left' ? sw * 0.13 : sw * 0.87, y = sh * 0.72;
+      const x = side === 'left' ? safe.l + STICK_R + 40 : sw - safe.r - SIDE_W - STICK_R - 40, y = sh * 0.72;
       ctx.strokeStyle = 'rgba(255,255,255,0.12)'; ctx.lineWidth = 2;
       ctx.beginPath(); ctx.arc(x, y, STICK_R, 0, Math.PI * 2); ctx.stroke();
       label(side === 'left' ? 'MOVE' : 'AIM', x, y, 13, 'rgba(255,255,255,0.35)', 'center');
@@ -1890,9 +1893,10 @@ function render() {
   if (banner && state === 'play') {
     const a = Math.min(1, banner.t * 2);
     ctx.globalAlpha = a;
-    label(banner.title, sw / 2, sh * 0.36, Math.min(46, sw / 14), '#ffe066', 'center');
-    label(banner.sub, sw / 2, sh * 0.36 + 38, 16, banner.color, 'center');
-    if (banner.note) label(banner.note, sw / 2, sh * 0.36 + 64, 14, '#9be7ff', 'center');
+    const mid = offX + W * scale / 2;
+    label(banner.title, mid, sh * 0.36, Math.min(46, sw / 14), '#ffe066', 'center');
+    label(banner.sub, mid, sh * 0.36 + 38, 16, banner.color, 'center');
+    if (banner.note) label(banner.note, mid, sh * 0.36 + 64, 14, '#9be7ff', 'center');
     ctx.globalAlpha = 1;
   }
 
