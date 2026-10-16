@@ -15,6 +15,24 @@ Open the link on your phone, turn it sideways, and use "Add to Home Screen" to i
 - Enemies pour in through the four doors. Clear them all to finish the round. Every 5th round has a boss.
 - Pickups: ♥ extra life, **R** rapid fire, **S** spread gun, ⚡ an extra power charge, **◆** 10 credits.
 - Kill quickly to build a combo multiplier (up to x5).
+- If your thumb covers your guy, a zoomed-in bubble of him pops up just above so you can still see him.
+
+## Rounds change as you go
+- **Acts:** every 5 rounds ends in a boss, then the arena changes look: Neon Studio, Toxic Dome, Frost Rink, Inferno.
+- **Pillars:** from round 2, each round has a different pillar layout. Pillars block bullets (yours and theirs), so use them as cover.
+- **New enemies** are announced the first time they show up.
+- **Twists:** from round 3, most rounds get a special rule, shown when the round starts:
+
+| Twist | What happens |
+|---|---|
+| Swarm | A flood of fast bugs |
+| Ambush | Enemies warp in anywhere on the floor; a red ring warns you first |
+| Cash Rush | Double ◆ from kills, and extra ◆ drops |
+| Minefield | Mines explode when you, an enemy, or your bullets touch them; you get a moment to run |
+| Sniper Nest | Mostly eye drones; hide behind pillars |
+| Overdrive | Enemies are faster, but you get rapid fire all round |
+| Lights Out | Only the area around you is lit; enemy eyes and bullets still glow |
+| Heavy Metal | Fewer enemies, all big ones |
 
 ## Upgrades
 You earn **◆ credits** as you play:

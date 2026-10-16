@@ -4,8 +4,8 @@
     {
       "name": "arena-blitz",
       "runtimeExecutable": "python",
-      "runtimeArgs": ["-m", "http.server", "8080", "--bind", "0.0.0.0"],
-      "port": 8080
+      "runtimeArgs": ["-m", "http.server", "8090", "--bind", "0.0.0.0"],
+      "port": 8090
     }
   ]
 }

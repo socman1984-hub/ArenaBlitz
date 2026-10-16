@@ -141,6 +141,41 @@ const doors = [
   { x: W - WALL / 2, y: H / 2,        nx: -1, ny: 0,  flash: 0 },
 ];
 
+// Every 5 rounds (one act, ending in a boss) the arena gets a new look.
+const THEMES = [
+  { name: 'NEON STUDIO', base: '#17142a', tiles: ['#1d1a33', '#221e3b'], wall: '#2b2550', neon: '#ff3df0', ring: '#33ccff', bulb: '#ffe066', bulbOff: '#5a4a2a' },
+  { name: 'TOXIC DOME',  base: '#0f1a14', tiles: ['#13241a', '#182c20'], wall: '#1f3b2a', neon: '#7cfc00', ring: '#ffe03c', bulb: '#d4ff4d', bulbOff: '#3a4a1a' },
+  { name: 'FROST RINK',  base: '#0f1826', tiles: ['#14233a', '#192a45'], wall: '#22395a', neon: '#5fe1ff', ring: '#ffffff', bulb: '#d8f7ff', bulbOff: '#2a4256' },
+  { name: 'INFERNO',     base: '#1f0e0b', tiles: ['#2a1410', '#331912'], wall: '#4a1d12', neon: '#ff6a1a', ring: '#ffc83c', bulb: '#ffb347', bulbOff: '#5a2a14' },
+];
+
+// Pillar layouts. Pillars block movement and all bullets, so they work as cover.
+const pl = (fx, fy, r) => ({ x: fx * W, y: fy * H, r });
+const LAYOUTS = {
+  four:    [pl(0.3, 0.3, 30), pl(0.7, 0.3, 30), pl(0.3, 0.7, 30), pl(0.7, 0.7, 30)],
+  corners: [pl(0.17, 0.22, 38), pl(0.83, 0.22, 38), pl(0.17, 0.78, 38), pl(0.83, 0.78, 38)],
+  diamond: [pl(0.5, 0.25, 26), pl(0.5, 0.75, 26), pl(0.3, 0.5, 26), pl(0.7, 0.5, 26)],
+  lanes:   [0.28, 0.5, 0.72].flatMap(fx => [pl(fx, 0.3, 22), pl(fx, 0.7, 22)]),
+  ring:    [0, 1, 2, 3, 4, 5].map(k => ({ x: W / 2 + Math.cos(k * Math.PI / 3 + Math.PI / 6) * 190,
+                                         y: H / 2 + Math.sin(k * Math.PI / 3 + Math.PI / 6) * 135, r: 20 })),
+};
+
+// Round twists: most rounds from round 3 on get one special rule.
+const TWISTS = {
+  swarm:     { name: 'SWARM',       hint: 'A flood of fast bugs!',                        color: '#ffd43b', from: 3 },
+  ambush:    { name: 'AMBUSH',      hint: 'Enemies warp in anywhere: watch the red rings', color: '#ff4466', from: 3 },
+  cash:      { name: 'CASH RUSH',   hint: 'Double ◆ from every kill',                     color: '#4dfff0', from: 3 },
+  mines:     { name: 'MINEFIELD',   hint: 'Shoot the mines or lure enemies onto them',    color: '#ff9f1a', from: 3 },
+  snipers:   { name: 'SNIPER NEST', hint: 'Drones everywhere: hide behind pillars',       color: '#33ddff', from: 4 },
+  overdrive: { name: 'OVERDRIVE',   hint: 'Faster enemies, but free rapid fire',          color: '#ff9f1a', from: 4 },
+  lights:    { name: 'LIGHTS OUT',  hint: 'You can only see what is near you',            color: '#9b8cff', from: 5 },
+  heavy:     { name: 'HEAVY METAL', hint: 'Fewer enemies, all of them big',               color: '#b266ff', from: 6 },
+};
+
+const INTRO = {
+  runner: 'SKITTER (fast)', shooter: 'EYE DRONE (shoots)', splitter: 'SLIME (splits in two)', tank: 'JUGGERNAUT (armored)',
+};
+
 // ---------------------------------------------------------------- state
 let state = 'title';      // title | play | shop | over
 let paused = false;
@@ -154,6 +189,8 @@ let best = store.get('arena_best', 0);
 let newBest = false;
 let credits = 0, levels = {}, flawless = true;
 let shopCards = [], shopMsg = null;
+let twist = null, lastTwist = null, forcedTwist = null, lastLayout = null, themeIdx = 0;
+let pillars = [], mines = [], warps = [], seen = new Set();
 
 const lvl = id => levels[id] || 0;
 const upgradeCost = u => u.cost + u.step * lvl(u.id);
@@ -168,7 +205,9 @@ function newGame() {
   credits = 0; levels = {};
   bullets = []; ebullets = []; enemies = []; particles = [];
   pickups = []; texts = []; missiles = []; effects = [];
+  pillars = []; mines = []; warps = [];
   boss = null;
+  twist = lastTwist = lastLayout = null; seen = new Set(['grunt']);
   score = 0; combo = 0; comboT = 0; shake = 0; flash = 0;
   newBest = false;
   state = 'play'; paused = false;
@@ -177,38 +216,75 @@ function newGame() {
 
 function startRound(n) {
   round = n;
+  const isBoss = n % 5 === 0;
+  const notes = [];
+  if ((n - 1) % 5 === 0) {
+    setTheme(Math.floor((n - 1) / 5));
+    notes.push(`ACT ${themeIdx + 1}: ${THEMES[themeIdx % THEMES.length].name}`);
+  }
+  twist = pickTwist(n, isBoss);
+  setupArena(n, isBoss);
   spawnQueue = buildWave(n);
   spawnT = 0;
   roundPhase = 'intro'; phaseT = 2;
   flawless = true;
   charges = ABILITIES.map(a => a.max + (a.id === 'blast' ? lvl('blast') : 0));
-  const isBoss = n % 5 === 0;
-  showBanner(`ROUND ${n}`, isBoss ? 'BOSS INCOMING!' : 'POWERS RECHARGED — FIGHT!');
+  const fresh = [...new Set(spawnQueue)].filter(t => INTRO[t] && !seen.has(t));
+  fresh.forEach(t => seen.add(t));
+  if (fresh.length) notes.push('NEW ENEMY: ' + fresh.map(t => INTRO[t]).join(', '));
+  const tw = twist && TWISTS[twist];
+  showBanner(`ROUND ${n}`, isBoss ? 'BOSS INCOMING!' : tw ? `${tw.name}: ${tw.hint}` : 'POWERS RECHARGED. FIGHT!',
+    notes.join('   ·   '), tw ? tw.color : '#fff');
   if (isBoss) Sound.jingle([196, 185, 175, 165], 160);
 }
+
+function pickTwist(n, isBoss) {
+  if (forcedTwist !== null) { const f = forcedTwist; forcedTwist = null; return f || null; }
+  if (isBoss || n < 3) return null;
+  if (n > 3 && Math.random() < 0.2) return null;   // the odd plain round
+  const t = pick(Object.keys(TWISTS).filter(k => TWISTS[k].from <= n && k !== lastTwist));
+  lastTwist = t;
+  return t;
+}
+
+function setupArena(n, isBoss) {
+  pillars = []; mines = []; warps = [];
+  let lay = null;
+  if (isBoss) lay = 'four';
+  else if (n >= 2 && (twist === 'snipers' || Math.random() > 0.15)) lay = pick(Object.keys(LAYOUTS).filter(k => k !== lastLayout));
+  lastLayout = lay;
+  if (lay) pillars = LAYOUTS[lay].map(c => ({ ...c, rise: 0 }));
+  if (player) pushOutOfPillars(player, player.r);
+  if (twist === 'mines') placeMines(8 + Math.min(6, n >> 1));
+}
+
+function setTheme(i) { themeIdx = i; buildFloor(THEMES[i % THEMES.length]); }
 
 function buildWave(n) {
   const q = [];
   const isBoss = n % 5 === 0;
-  const count = isBoss ? 8 + n * 2 : 12 + n * 5;
-  const pool = [['grunt', 10]];
+  let count = isBoss ? 8 + n * 2 : 12 + n * 5;
+  let pool = [['grunt', 10]];
   if (n >= 2) pool.push(['runner', 3 + n]);
   if (n >= 3) pool.push(['shooter', 2 + n * 0.5]);
   if (n >= 4) pool.push(['splitter', 3 + n * 0.4]);
   if (n >= 6) pool.push(['tank', 1 + n * 0.3]);
+  if (twist === 'swarm') { count = Math.round(count * 1.6); pool = [['runner', 8], ['grunt', 2]]; }
+  else if (twist === 'snipers') { count = Math.round(count * 0.8); pool = [['shooter', 5], ['grunt', 3], ['runner', 2]]; }
+  else if (twist === 'heavy') { count = Math.max(6, Math.round(count * 0.4)); pool = [['tank', 4], ['splitter', 4], ['grunt', 1]]; }
   for (let i = 0; i < count; i++) q.push(weighted(pool));
   if (n === 3) q.splice(q.length >> 1, 0, 'tank');   // first taste of a big guy
   if (isBoss) q.unshift('boss');
   return q;
 }
 
-function showBanner(title, sub) { banner = { title, sub, t: 2.4 }; }
+function showBanner(title, sub, note = '', color = '#fff') { banner = { title, sub, note, color, t: note ? 3.4 : 2.6 }; }
 
 // ---------------------------------------------------------------- entities
 function makeEnemy(type, x, y) {
   const d = ETYPES[type];
   const hpMul = 1 + (round - 1) * 0.1;
-  const spMul = Math.min(1.6, 1 + (round - 1) * 0.03);
+  const spMul = Math.min(1.6, 1 + (round - 1) * 0.03) * (twist === 'overdrive' ? 1.3 : 1);
   const e = {
     type, x, y, r: d.r * SPR, color: d.color, score: d.score, cr: d.cr,
     hp: Math.ceil(d.hp * hpMul), maxHp: 0,
@@ -270,7 +346,7 @@ function killEnemy(e) {
   combo++; comboT = 2;
   const pts = e.score * comboMult();
   score += pts;
-  credits += e.cr;
+  credits += e.cr * (twist === 'cash' ? 2 : 1);
   if (e.type === 'boss') {
     burst(e.x, e.y, e.color, 90, 450, 7);
     burst(e.x, e.y, '#fff', 40, 300, 5);
@@ -286,6 +362,7 @@ function killEnemy(e) {
     shake = Math.max(shake, e.r > 18 ? 6 : 2);
     addText(e.x, e.y - e.r, '+' + pts, comboMult() > 1 ? '#ffd43b' : '#fff', 12, 0.6);
     if (Math.random() < 0.075 * (1 + 0.5 * lvl('magnet'))) dropPickup(e.x, e.y);
+    else if (twist === 'cash' && e.cr && Math.random() < 0.2) dropPickup(e.x, e.y, false, 'coin');
   }
   if (e.type === 'splitter') {
     for (let i = 0; i < 2; i++) {
@@ -296,10 +373,12 @@ function killEnemy(e) {
   }
 }
 
-function dropPickup(x, y, rich = false) {
+function dropPickup(x, y, rich = false, type = null) {
   const pool = [['rapid', 3], ['spread', 3], ['charge', 2.5], ['coin', rich ? 6 : 3]];
   if (player.hp < player.maxHp) pool.push(['heart', rich ? 4 : 2]);
-  pickups.push({ type: weighted(pool), x: clamp(x, WALL + 20, W - WALL - 20), y: clamp(y, WALL + 20, H - WALL - 20), life: 9, t: 0 });
+  const pk = { type: type || weighted(pool), x: clamp(x, WALL + 20, W - WALL - 20), y: clamp(y, WALL + 20, H - WALL - 20), life: 9, t: 0 };
+  pushOutOfPillars(pk, 16);
+  pickups.push(pk);
 }
 
 function collect(p) {
@@ -444,6 +523,74 @@ function nearestEnemy(x, y) {
   return bestE;
 }
 
+// ---------------------------------------------------------------- arena hazards
+// Push a circle out of any pillar it overlaps. Returns the pillar it hit, if any.
+function pushOutOfPillars(o, r) {
+  let hit = null;
+  for (const c of pillars) {
+    const dx = o.x - c.x, dy = o.y - c.y, min = r + c.r, dd = dx * dx + dy * dy;
+    if (dd >= min * min) continue;
+    const d = Math.sqrt(dd), ux = d > 0.01 ? dx / d : 1, uy = d > 0.01 ? dy / d : 0;
+    o.x = c.x + ux * min; o.y = c.y + uy * min;
+    hit = c;
+  }
+  return hit;
+}
+const inPillar = (x, y, pad = 0) => pillars.some(c => d2(x, y, c.x, c.y) < (c.r + pad) ** 2);
+
+function openSpot(minDist) {
+  for (let tries = 0; tries < 200; tries++) {
+    const x = rand(WALL + 40, W - WALL - 40), y = rand(WALL + 40, H - WALL - 40);
+    if (d2(x, y, player.x, player.y) > minDist * minDist && !inPillar(x, y, 30)) return { x, y };
+  }
+  return { x: W - player.x, y: H - player.y };
+}
+
+function placeMines(n) {
+  for (let tries = 0; mines.length < n && tries < 400; tries++) {
+    const { x, y } = openSpot(150);
+    if (doors.some(d => d2(x, y, d.x, d.y) < 110 * 110)) continue;
+    if (mines.some(m => d2(x, y, m.x, m.y) < 70 * 70)) continue;
+    mines.push({ x, y, fuse: -1, t: rand(0, 6) });
+  }
+}
+
+// Mines go off when you, an enemy or one of your bullets touches them. You get a moment to run.
+function updateMines(dt) {
+  for (const m of mines) {
+    m.t += dt;
+    if (m.fuse < 0) {
+      let trip = d2(m.x, m.y, player.x, player.y) < (player.r + 12) ** 2;
+      if (!trip) for (const e of enemies) if (!e.dead && !e.entering && d2(m.x, m.y, e.x, e.y) < (e.r + 10) ** 2) { trip = true; break; }
+      if (!trip) for (const b of bullets) if (!b.dead && d2(m.x, m.y, b.x, b.y) < 16 * 16) { trip = true; b.dead = true; break; }
+      if (trip) { m.fuse = 0.45; Sound.tone(880, 0.08, 'square', 0.04); }
+    } else if ((m.fuse -= dt) <= 0) {
+      m.dead = true;
+      explode(m.x, m.y, 80, 10);
+      burst(m.x, m.y, '#ff9f1a', 24, 320, 5);
+      shake = Math.max(shake, 10);
+      if (d2(m.x, m.y, player.x, player.y) < 70 * 70) hurtPlayer();
+      for (const o of mines) if (!o.dead && o.fuse < 0 && d2(m.x, m.y, o.x, o.y) < 90 * 90) o.fuse = 0.15;   // chain reaction
+    }
+  }
+  mines = mines.filter(m => !m.dead);
+  bullets = bullets.filter(b => !b.dead);
+}
+
+// Ambush spawns: a warning ring shows where an enemy is about to appear.
+function updateWarps(dt) {
+  for (const w of warps) {
+    if ((w.t -= dt) > 0) continue;
+    w.dead = true;
+    const e = makeEnemy(w.type, w.x, w.y);
+    pushOutOfPillars(e, e.r);
+    enemies.push(e);
+    burst(w.x, w.y, '#ff4466', 14, 200, 3);
+    Sound.tone(300, 0.12, 'sawtooth', 0.03, 600);
+  }
+  warps = warps.filter(w => !w.dead);
+}
+
 // ---------------------------------------------------------------- input
 const keys = {};
 const sticks = { left: null, right: null };
@@ -577,7 +724,10 @@ function update(dt) {
   updatePlayer(dt);
   updateEnemies(dt);
   updateShots(dt);
+  updateMines(dt);
+  updateWarps(dt);
   updateAbilities(dt);
+  for (const c of pillars) c.rise = Math.min(1, c.rise + dt * 3);
   updatePickups(dt);
   updateFx(dt);
   enemies = enemies.filter(e => !e.dead);
@@ -593,14 +743,24 @@ function updateRound(dt) {
     spawnT -= dt;
     const cap = 30 + round * 3;
     if (spawnQueue.length && spawnT <= 0 && enemies.length < cap) {
-      const door = spawnQueue[0] === 'boss' ? doors[0] : pick(doors);
       const group = spawnQueue[0] === 'boss' ? 1 : Math.min(spawnQueue.length, randi(2, 3 + Math.floor(round / 3)));
-      for (let i = 0; i < group; i++) spawnFromDoor(spawnQueue.shift(), door, i);
-      door.flash = 0.8;
+      if (twist === 'ambush' && Math.random() < 0.65) {
+        const at = openSpot(170);
+        for (let i = 0; i < group; i++) {
+          warps.push({ type: spawnQueue.shift(), x: clamp(at.x + rand(-35, 35), WALL + 30, W - WALL - 30),
+                       y: clamp(at.y + rand(-35, 35), WALL + 30, H - WALL - 30), t: 1.1 });
+        }
+      } else {
+        const door = spawnQueue[0] === 'boss' ? doors[0] : pick(doors);
+        for (let i = 0; i < group; i++) spawnFromDoor(spawnQueue.shift(), door, i);
+        door.flash = 0.8;
+      }
       spawnT = Math.max(0.55, 2.0 - round * 0.08);
     }
-    if (!spawnQueue.length && enemies.length === 0) {
+    if (!spawnQueue.length && !warps.length && enemies.length === 0) {
       roundPhase = 'clear'; phaseT = 3.2;
+      for (const m of mines) burst(m.x, m.y, '#888', 6, 80, 3);   // leftover mines fizzle out
+      mines = [];
       const bonus = round * 1000;
       const crBonus = 8 + round * 2 + (flawless ? 10 : 0);
       score += bonus;
@@ -637,6 +797,7 @@ function updatePlayer(dt) {
     p.x += mx * spd * dt; p.y += my * spd * dt;
     p.walk += dt * 13;
   }
+  pushOutOfPillars(p, p.r);
   p.x = clamp(p.x, WALL + p.r, W - WALL - p.r);
   p.y = clamp(p.y, WALL + p.r, H - WALL - p.r);
 
@@ -653,7 +814,7 @@ function updatePlayer(dt) {
 
   // always shooting
   if (p.weaponT > 0) { p.weaponT -= dt; if (p.weaponT <= 0) p.weapon = 'basic'; }
-  const w = WEAPONS[p.weapon];
+  const w = WEAPONS[twist === 'overdrive' && p.weapon === 'basic' ? 'rapid' : p.weapon];
   const count = w.count + lvl('multi'), arc = w.arc + lvl('multi') * 0.14;
   const dmg = w.dmg * (1 + 0.25 * lvl('damage'));
   p.fireT -= dt;
@@ -724,6 +885,12 @@ function updateEnemies(dt) {
     e.kx -= e.kx * decay; e.ky -= e.ky * decay;
     e.x = clamp(e.x, WALL + e.r, W - WALL - e.r);
     e.y = clamp(e.y, WALL + e.r, H - WALL - e.r);
+    const c = pushOutOfPillars(e, e.r);
+    if (c) {   // slide around the pillar, toward whichever side the player is on
+      const ux = (e.x - c.x) / (e.r + c.r), uy = (e.y - c.y) / (e.r + c.r);
+      const side = (-uy * (p.x - e.x) + ux * (p.y - e.y)) >= 0 ? 1 : -1;
+      e.x += -uy * side * e.speed * dt; e.y += ux * side * e.speed * dt;
+    }
 
     if (d2(e.x, e.y, p.x, p.y) < (e.r / SPR + p.r - 3) ** 2) hurtPlayer();   // touch range uses the un-enlarged size, to stay forgiving
   }
@@ -784,7 +951,7 @@ function inArena(x, y, pad = 0) {
 function updateShots(dt) {
   for (const b of bullets) {
     b.x += b.vx * dt; b.y += b.vy * dt; b.life -= dt;
-    if (b.life <= 0 || !inArena(b.x, b.y)) {
+    if (b.life <= 0 || !inArena(b.x, b.y) || inPillar(b.x, b.y)) {
       b.dead = true;
       if (Math.random() < 0.3) burst(b.x, b.y, '#ffe066', 2, 80, 2);
       continue;
@@ -808,7 +975,7 @@ function updateShots(dt) {
   const p = player;
   for (const b of ebullets) {
     b.x += b.vx * dt; b.y += b.vy * dt; b.life -= dt;
-    if (b.life <= 0 || !inArena(b.x, b.y, -4)) { b.dead = true; continue; }
+    if (b.life <= 0 || !inArena(b.x, b.y, -4) || inPillar(b.x, b.y)) { b.dead = true; continue; }
     const rr = b.r + p.r - 4;
     if (d2(p.x, p.y, b.x, b.y) < rr * rr && p.inv <= 0) { b.dead = true; hurtPlayer(); }
   }
@@ -845,7 +1012,7 @@ function updateAbilities(dt) {
     m.speed = Math.min(620, m.speed + 700 * dt);
     m.x += Math.cos(m.a) * m.speed * dt; m.y += Math.sin(m.a) * m.speed * dt;
     particles.push({ x: m.x, y: m.y, vx: rand(-20, 20), vy: rand(-20, 20), life: 0.3, max: 0.3, color: '#9be7ff', size: 3 });
-    let hit = m.life <= 0 || !inArena(m.x, m.y);
+    let hit = m.life <= 0 || !inArena(m.x, m.y) || inPillar(m.x, m.y);
     if (!hit) for (const e of enemies) {
       if (!e.dead && d2(e.x, e.y, m.x, m.y) < (e.r + 6) ** 2) { hit = true; break; }
     }
@@ -911,33 +1078,34 @@ function updateFx(dt) {
 
 // ---------------------------------------------------------------- render
 const floor = document.createElement('canvas');
-(function buildFloor() {
+function buildFloor(th) {
   const S = 2;
   floor.width = W * S; floor.height = H * S;
   const f = floor.getContext('2d');
   f.scale(S, S);
-  f.fillStyle = '#17142a'; f.fillRect(0, 0, W, H);
+  f.fillStyle = th.base; f.fillRect(0, 0, W, H);
   const T = 40;
   for (let y = WALL; y < H - WALL; y += T) {
     for (let x = WALL; x < W - WALL; x += T) {
-      f.fillStyle = ((x - WALL) / T + (y - WALL) / T) % 2 < 1 ? '#1d1a33' : '#221e3b';
+      f.fillStyle = th.tiles[((x - WALL) / T + (y - WALL) / T) % 2 < 1 ? 0 : 1];
       f.fillRect(x, y, T, T);
     }
   }
   // center stage logo
-  f.strokeStyle = 'rgba(255,61,240,0.18)'; f.lineWidth = 6;
+  f.globalAlpha = 0.18; f.strokeStyle = th.neon; f.lineWidth = 6;
   f.beginPath(); f.arc(W / 2, H / 2, 120, 0, Math.PI * 2); f.stroke();
-  f.strokeStyle = 'rgba(51,204,255,0.12)'; f.lineWidth = 3;
+  f.globalAlpha = 0.12; f.strokeStyle = th.ring; f.lineWidth = 3;
   f.beginPath(); f.arc(W / 2, H / 2, 150, 0, Math.PI * 2); f.stroke();
+  f.globalAlpha = 1;
   f.fillStyle = 'rgba(255,255,255,0.06)';
   f.font = 'bold 54px system-ui, sans-serif'; f.textAlign = 'center'; f.textBaseline = 'middle';
   f.fillText('ARENA', W / 2, H / 2 - 18);
   f.fillText('BLITZ', W / 2, H / 2 + 34);
   // walls
-  f.fillStyle = '#2b2550';
+  f.fillStyle = th.wall;
   f.fillRect(0, 0, W, WALL); f.fillRect(0, H - WALL, W, WALL);
   f.fillRect(0, 0, WALL, H); f.fillRect(W - WALL, 0, WALL, H);
-  f.strokeStyle = '#ff3df0'; f.lineWidth = 3;
+  f.strokeStyle = th.neon; f.lineWidth = 3;
   f.strokeRect(WALL - 1.5, WALL - 1.5, W - WALL * 2 + 3, H - WALL * 2 + 3);
   // doorways
   f.fillStyle = '#07060d';
@@ -945,7 +1113,8 @@ const floor = document.createElement('canvas');
   f.fillRect(W / 2 - DOOR_W / 2, H - WALL, DOOR_W, WALL);
   f.fillRect(0, H / 2 - DOOR_W / 2, WALL, DOOR_W);
   f.fillRect(W - WALL, H / 2 - DOOR_W / 2, WALL, DOOR_W);
-})();
+}
+buildFloor(THEMES[0]);
 
 // marquee bulbs around the arena, like a TV game show set
 const bulbs = [];
@@ -957,11 +1126,12 @@ for (let y = 40; y < H - 20; y += 40) {
 }
 
 function drawArena() {
+  const th = THEMES[themeIdx % THEMES.length];
   ctx.drawImage(floor, 0, 0, W, H);
   const step = Math.floor(time * 8);
   for (let i = 0; i < bulbs.length; i++) {
     const on = (i + step) % 4 === 0;
-    ctx.fillStyle = on ? '#ffe066' : '#5a4a2a';
+    ctx.fillStyle = on ? th.bulb : th.bulbOff;
     ctx.beginPath(); ctx.arc(bulbs[i][0], bulbs[i][1], on ? 4 : 3, 0, Math.PI * 2); ctx.fill();
   }
   for (const d of doors) {
@@ -1337,12 +1507,84 @@ function drawShots() {
     ctx.restore();
   }
 
+  drawEnemyBullets();
+}
+
+function drawEnemyBullets() {
   const pulse = 1 + Math.sin(time * 15) * 0.15;
   for (const b of ebullets) {
     circle(b.x, b.y, 9 * pulse, 'rgba(255,50,120,0.3)');
     circle(b.x, b.y, 5, '#ff4f9a');
     circle(b.x, b.y, 2.5, '#fff');
   }
+}
+
+function drawHazards() {
+  const th = THEMES[themeIdx % THEMES.length];
+  for (const c of pillars) {
+    const r = c.r * (0.3 + 0.7 * c.rise);
+    shadow(c.x + 5, c.y + 7, r, r * 0.85);
+    circle(c.x, c.y, r, th.wall);
+    ctx.strokeStyle = th.neon; ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.arc(c.x, c.y, r - 1.5, 0, Math.PI * 2); ctx.stroke();
+    circle(c.x - r * 0.22, c.y - r * 0.25, r * 0.5, 'rgba(255,255,255,0.08)');
+  }
+  for (const m of mines) {
+    const lit = m.fuse >= 0 ? Math.floor(time * 16) % 2 === 0 : Math.sin(m.t * 4) > 0.3;
+    if (m.fuse >= 0) {
+      ctx.strokeStyle = 'rgba(255,60,60,0.5)'; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.arc(m.x, m.y, 70, 0, Math.PI * 2); ctx.stroke();
+    }
+    circle(m.x, m.y, 12, '#2a2a30');
+    ctx.strokeStyle = '#ff9f1a'; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(m.x, m.y, 10, 0, Math.PI * 2); ctx.stroke();
+    circle(m.x, m.y, 4, lit ? '#ff3b3b' : '#5a1a1a');
+  }
+  for (const w of warps) {
+    const k = Math.max(0, w.t / 1.1);
+    ctx.strokeStyle = `rgba(255,68,102,${0.9 - k * 0.5})`; ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.arc(w.x, w.y, 10 + k * 30, 0, Math.PI * 2); ctx.stroke();
+    circle(w.x, w.y, 6 * (1 - k) + 2, '#ff4466');
+  }
+}
+
+// LIGHTS OUT: dark everywhere except around you. Enemy eyes and bullets still glow so it stays fair.
+function drawDarkness() {
+  const p = player;
+  const g = ctx.createRadialGradient(p.x, p.y, 70, p.x, p.y, 220);
+  g.addColorStop(0, 'rgba(4,3,10,0)'); g.addColorStop(1, 'rgba(4,3,10,0.92)');
+  ctx.fillStyle = g; ctx.fillRect(-60, -60, W + 120, H + 120);
+  for (const e of enemies) {
+    circle(e.x, e.y - e.r * 0.3, 7, 'rgba(255,255,255,0.15)');
+    circle(e.x, e.y - e.r * 0.3, 3, e.color);
+  }
+  drawEnemyBullets();
+}
+
+// When a thumb is over your guy, show a zoomed-in bubble of him just above, where you can see it.
+let peekA = 0;
+function drawPeek() {
+  if (!isTouch || state !== 'play' || paused) { peekA = 0; return; }
+  const px = offX + player.x * scale, py = offY + player.y * scale;
+  const covered = [sticks.left, sticks.right].some(s => s && d2(s.x, s.y, px, py) < 120 * 120);
+  peekA = clamp(peekA + (covered ? 0.2 : -0.1), 0, 1);
+  if (peekA <= 0) return;
+  const R = 54, rs = R / 1.4;
+  const bx = clamp(px, safe.l + R + 6, sw - safe.r - R - 6);
+  let by = py - R - 64;
+  if (by < safe.t + R + 6) by = py + R + 64;
+  ctx.save();
+  ctx.globalAlpha = peekA * 0.95;
+  ctx.beginPath(); ctx.arc(bx, by, R, 0, Math.PI * 2);
+  ctx.save(); ctx.clip();
+  ctx.fillStyle = '#0d0b18'; ctx.fillRect(bx - R, by - R, R * 2, R * 2);
+  ctx.drawImage(canvas, (px - rs) * dpr, (py - rs) * dpr, rs * 2 * dpr, rs * 2 * dpr, bx - R, by - R, R * 2, R * 2);
+  ctx.restore();
+  ctx.strokeStyle = '#33e0ff'; ctx.lineWidth = 2.5; ctx.stroke();
+  const dir = by < py ? 1 : -1;   // little tail pointing back at the player
+  ctx.fillStyle = '#33e0ff';
+  ctx.beginPath(); ctx.moveTo(bx - 8, by + dir * (R - 1)); ctx.lineTo(bx + 8, by + dir * (R - 1)); ctx.lineTo(bx, by + dir * (R + 10)); ctx.fill();
+  ctx.restore();
 }
 
 function drawPickups() {
@@ -1417,8 +1659,9 @@ function drawHud() {
   }
 
   label(`ROUND ${round}`, sw / 2, top + 20, 18, '#fff', 'center');
-  const left2 = spawnQueue.length + enemies.length;
+  const left2 = spawnQueue.length + warps.length + enemies.length;
   if (roundPhase !== 'clear') label(`${left2} enemies left`, sw / 2, top + 40, 12, 'rgba(255,255,255,0.7)', 'center', 'normal');
+  if (twist && roundPhase !== 'clear') label(TWISTS[twist].name, sw / 2, top + 58, 12, TWISTS[twist].color, 'center');
 
   if (boss && !boss.dead) {
     const bw = Math.min(360, sw * 0.5), bx = sw / 2 - bw / 2, by = top + 54;
@@ -1597,15 +1840,18 @@ function render() {
   ctx.setTransform(k, 0, 0, k, (offX + sx * scale) * dpr, (offY + sy * scale) * dpr);
   drawArena();
   if (state !== 'title') {
+    drawHazards();
     drawPickups();
     for (const e of enemies) drawEnemy(e);
     drawPlayer();
     drawShots();
     drawFx();
+    if (twist === 'lights' && state === 'play' && roundPhase !== 'clear') drawDarkness();
   }
 
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   if (flash > 0) { ctx.fillStyle = `rgba(${flashColor},${Math.min(0.5, flash * 0.6)})`; ctx.fillRect(0, 0, sw, sh); }
+  drawPeek();
 
   const portrait = isTouch && sh > sw;
   if (portrait) {
@@ -1645,7 +1891,8 @@ function render() {
     const a = Math.min(1, banner.t * 2);
     ctx.globalAlpha = a;
     label(banner.title, sw / 2, sh * 0.36, Math.min(46, sw / 14), '#ffe066', 'center');
-    label(banner.sub, sw / 2, sh * 0.36 + 38, 16, '#fff', 'center');
+    label(banner.sub, sw / 2, sh * 0.36 + 38, 16, banner.color, 'center');
+    if (banner.note) label(banner.note, sw / 2, sh * 0.36 + 64, 14, '#9be7ff', 'center');
     ctx.globalAlpha = 1;
   }
 
@@ -1694,5 +1941,6 @@ requestAnimationFrame(frame);
 window.__arena = { get state() { return state; }, get round() { return round; }, get score() { return score; },
   get enemies() { return enemies.length; }, get enemyList() { return enemies; }, get player() { return player; }, startRound, useAbility, newGame,
   get credits() { return credits; }, set credits(v) { credits = v; }, get levels() { return levels; },
-  set round(v) { round = v; }, openShop, step: dt => { if (state === 'play') update(dt); }, spawn: (type, x, y) => enemies.push(makeEnemy(type, x, y)) };
+  set round(v) { round = v; }, openShop, get twist() { return twist; }, set nextTwist(v) { forcedTwist = v; },
+  get pillars() { return pillars; }, get mines() { return mines; }, step: dt => { if (state === 'play') update(dt); }, spawn: (type, x, y) => enemies.push(makeEnemy(type, x, y)) };
 })();
