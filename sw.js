@@ -1,5 +1,5 @@
 // Offline cache so the game works without a connection once installed.
-const CACHE = 'arena-blitz-v6';
+const CACHE = 'arena-blitz-v7';
 const FILES = ['./', 'index.html', 'game.js', 'manifest.json', 'icon.svg', 'version.json'];
 
 self.addEventListener('install', e => {

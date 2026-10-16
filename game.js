@@ -172,6 +172,15 @@ const TWISTS = {
   heavy:     { name: 'HEAVY METAL', hint: 'Fewer enemies, all of them big',               color: '#b266ff', from: 6 },
 };
 
+// Each arena theme has its own boss (same order as THEMES).
+const BOSSES = [
+  { id: 'overlord', name: 'THE OVERLORD',  color: '#ff3366', hint: 'Twin cannons, bullet rings and minions' },
+  { id: 'queen',    name: 'SLUDGE QUEEN',  color: '#7cfc00', hint: 'Dodge the acid and stay out of the puddles' },
+  { id: 'sentinel', name: 'CRYO SENTINEL', color: '#5fe1ff', hint: 'Sidestep its charge, then hit it while it is dazed' },
+  { id: 'titan',    name: 'MAGMA TITAN',   color: '#ff6a1a', hint: 'Watch the floor for meteors; slip through the gap in the fire' },
+];
+const bossDef = () => BOSSES[themeIdx % BOSSES.length];
+
 const INTRO = {
   runner: 'SKITTER (fast)', shooter: 'EYE DRONE (shoots)', splitter: 'SLIME (splits in two)', tank: 'JUGGERNAUT (armored)',
 };
@@ -190,7 +199,7 @@ let newBest = false;
 let credits = 0, levels = {}, flawless = true;
 let shopCards = [], shopMsg = null;
 let twist = null, lastTwist = null, forcedTwist = null, lastLayout = null, themeIdx = 0;
-let pillars = [], mines = [], warps = [], seen = new Set();
+let pillars = [], mines = [], warps = [], strikes = [], puddles = [], seen = new Set();
 
 const lvl = id => levels[id] || 0;
 const upgradeCost = u => u.cost + u.step * lvl(u.id);
@@ -233,8 +242,8 @@ function startRound(n) {
   fresh.forEach(t => seen.add(t));
   if (fresh.length) notes.push('NEW ENEMY: ' + fresh.map(t => INTRO[t]).join(', '));
   const tw = twist && TWISTS[twist];
-  showBanner(`ROUND ${n}`, isBoss ? 'BOSS INCOMING!' : tw ? `${tw.name}: ${tw.hint}` : 'POWERS RECHARGED. FIGHT!',
-    notes.join('   ·   '), tw ? tw.color : '#fff');
+  showBanner(`ROUND ${n}`, isBoss ? `BOSS: ${bossDef().name}! ${bossDef().hint}` : tw ? `${tw.name}: ${tw.hint}` : 'POWERS RECHARGED. FIGHT!',
+    notes.join('   ·   '), isBoss ? bossDef().color : tw ? tw.color : '#fff');
   if (isBoss) Sound.jingle([196, 185, 175, 165], 160);
 }
 
@@ -248,7 +257,7 @@ function pickTwist(n, isBoss) {
 }
 
 function setupArena(n, isBoss) {
-  pillars = []; mines = []; warps = [];
+  pillars = []; mines = []; warps = []; strikes = []; puddles = [];
   let lay = null;
   if (isBoss) lay = 'four';
   else if (n >= 2 && (twist === 'snipers' || Math.random() > 0.15)) lay = pick(Object.keys(LAYOUTS).filter(k => k !== lastLayout));
@@ -293,9 +302,12 @@ function makeEnemy(type, x, y) {
     fireT: rand(1, 2.5), entering: false, dnx: 0, dny: 0, dead: false, face: 0,
   };
   if (type === 'boss') {
+    const bd = bossDef();
+    e.kind = bd.id; e.color = bd.color;
     e.hp = Math.round(260 + round * 45);
     e.speed = d.speed;
     e.burstT = 2.5; e.spawnT = 4; e.fireT = 1.5;
+    e.mode = 'walk'; e.modeT = 2.5; e.spin = 0; e.ring2T = 0; e.cdx = 0; e.cdy = 1; e.px = x; e.py = y;
   }
   e.maxHp = e.hp;
   return e;
@@ -311,8 +323,8 @@ function spawnFromDoor(type, door, i) {
   if (type === 'boss') boss = e;
 }
 
-function fireEnemyBullet(x, y, dx, dy, speed) {
-  ebullets.push({ x, y, vx: dx * speed, vy: dy * speed, r: 6, life: 5 });
+function fireEnemyBullet(x, y, dx, dy, speed, color) {
+  ebullets.push({ x, y, vx: dx * speed, vy: dy * speed, r: 6, life: 5, color });
 }
 
 function burst(x, y, color, n, spd, size = 4) {
@@ -331,6 +343,7 @@ const comboMult = () => 1 + Math.min(4, Math.floor(combo / 10));
 
 function damage(e, dmg, kvx = 0, kvy = 0, kb = 1) {
   if (e.dead) return;
+  if (e.mode === 'stun') dmg *= 2;
   e.hp -= dmg;
   e.hitT = 0.07;
   if (e.type !== 'boss') {
@@ -355,6 +368,7 @@ function killEnemy(e) {
     for (let i = 0; i < 6; i++) dropPickup(e.x + rand(-60, 60), e.y + rand(-60, 60), true);
     addText(e.x, e.y - 60, '+' + pts, '#ffd43b', 28, 1.6);
     boss = null;
+    strikes = []; puddles = [];
     for (const o of enemies) if (!o.dead && o.type !== 'boss') killEnemy(o);
   } else {
     burst(e.x, e.y, e.color, e.r > 18 ? 22 : 12, 220);
@@ -367,6 +381,7 @@ function killEnemy(e) {
   if (e.type === 'splitter') {
     for (let i = 0; i < 2; i++) {
       const m = makeEnemy('runner', e.x + rand(-8, 8), e.y + rand(-8, 8));
+      if (!e.cr) m.cr = 0;
       m.kx = rand(-220, 220); m.ky = rand(-220, 220);
       enemies.push(m);
     }
@@ -730,6 +745,7 @@ function update(dt) {
   updateShots(dt);
   updateMines(dt);
   updateWarps(dt);
+  updateBossHazards(dt);
   updateAbilities(dt);
   for (const c of pillars) c.rise = Math.min(1, c.rise + dt * 3);
   updatePickups(dt);
@@ -764,7 +780,7 @@ function updateRound(dt) {
     if (!spawnQueue.length && !warps.length && enemies.length === 0) {
       roundPhase = 'clear'; phaseT = 3.2;
       for (const m of mines) burst(m.x, m.y, '#888', 6, 80, 3);   // leftover mines fizzle out
-      mines = [];
+      mines = []; strikes = []; puddles = [];
       const bonus = round * 1000;
       const crBonus = 8 + round * 2 + (flawless ? 10 : 0);
       score += bonus;
@@ -878,7 +894,7 @@ function updateEnemies(dt) {
         }
         break;
       }
-      case 'boss': bossAI(e, dx, dy, dt); break;
+      case 'boss': { const steer = bossAI(e, dx, dy, dt); if (steer) { mx = steer[0]; my = steer[1]; } break; }
     }
 
     const l = Math.hypot(mx, my) || 1;
@@ -920,6 +936,134 @@ function updateEnemies(dt) {
 }
 
 function bossAI(e, dx, dy, dt) {
+  switch (e.kind) {
+    case 'queen': return queenAI(e, dx, dy, dt);
+    case 'sentinel': return sentinelAI(e, dx, dy, dt);
+    case 'titan': return titanAI(e, dx, dy, dt);
+  }
+  return overlordAI(e, dx, dy, dt);
+}
+
+function spawnMinions(e, type, n) {
+  for (let k = 0; k < n; k++) {
+    const a = rand(0, Math.PI * 2);
+    const m = makeEnemy(type, e.x + Math.cos(a) * 70, e.y + Math.sin(a) * 70);
+    m.cr = 0;   // no farming credits off a boss's endless minions
+    enemies.push(m);
+  }
+}
+
+// A marked spot on the floor that blows up after a moment (acid lobs, meteors).
+function addStrike(x, y, r, t, color, puddle = false) {
+  strikes.push({ x: clamp(x, WALL + 20, W - WALL - 20), y: clamp(y, WALL + 20, H - WALL - 20), r, t, max: t, color, puddle });
+}
+
+// Sludge Queen: lobs acid that leaves burning puddles, sprays acid, and births slimes.
+function queenAI(e, dx, dy, dt) {
+  const enraged = e.hp < e.maxHp * 0.5;
+  e.speed = enraged ? 58 : 38;
+  e.burstT -= dt; e.spawnT -= dt; e.fireT -= dt;
+  if (e.burstT <= 0) {
+    const n = enraged ? 4 : 3;
+    for (let k = 0; k < n; k++) addStrike(player.x + (k ? rand(-110, 110) : 0), player.y + (k ? rand(-90, 90) : 0), 46, 1.1, '#7cfc00', true);
+    e.burstT = enraged ? 1.8 : 2.6;
+    Sound.tone(180, 0.3, 'sine', 0.05, 90);
+  }
+  if (e.fireT <= 0) {
+    const base = Math.atan2(dy, dx), n = enraged ? 9 : 7;
+    for (let k = 0; k < n; k++) {
+      const a = base + (k / (n - 1) - 0.5) * 1.1;
+      fireEnemyBullet(e.x, e.y, Math.cos(a), Math.sin(a), 150, '#9dff3d');
+    }
+    e.fireT = enraged ? 2.2 : 3;
+  }
+  if (e.spawnT <= 0) { spawnMinions(e, 'splitter', 1); e.spawnT = enraged ? 6 : 8; }
+  return null;
+}
+
+// Cryo Sentinel: spins out ice shards, then locks on and charges. Dazed (double damage) after it crashes.
+function sentinelAI(e, dx, dy, dt) {
+  const enraged = e.hp < e.maxHp * 0.5;
+  const moved = (e.x - e.px) * e.cdx + (e.y - e.py) * e.cdy;   // progress along the charge line
+  e.px = e.x; e.py = e.y;
+  e.modeT -= dt;
+  if (e.mode === 'walk') {
+    e.speed = enraged ? 70 : 52;
+    e.fireT -= dt;
+    if (e.fireT <= 0) {
+      const arms = enraged ? 3 : 2;
+      e.spin += 0.45;
+      for (let k = 0; k < arms; k++) {
+        const a = e.spin + k * Math.PI * 2 / arms;
+        fireEnemyBullet(e.x, e.y, Math.cos(a), Math.sin(a), 170, '#bff4ff');
+      }
+      e.fireT = 0.26;
+    }
+    if (e.modeT <= 0) { e.mode = 'aim'; e.modeT = 0.95; Sound.tone(300, 0.9, 'sawtooth', 0.04, 900); }
+    return null;
+  }
+  if (e.mode === 'aim') {
+    e.speed = 0;
+    if (e.modeT > 0.35) { e.cdx = dx; e.cdy = dy; }   // tracks you, then locks in for the last moment
+    if (e.modeT <= 0) { e.mode = 'charge'; e.modeT = 1.6; }
+    return null;
+  }
+  if (e.mode === 'charge') {
+    e.speed = enraged ? 620 : 540;
+    if (Math.random() < 0.8) burst(e.x, e.y, '#d8f7ff', 2, 60, 4);
+    // stopped short (hit a wall or pillar), or ran out of steam
+    if ((e.modeT < 1.5 && moved < e.speed * dt * 0.6) || e.modeT <= 0) {
+      e.mode = 'stun'; e.modeT = enraged ? 1.0 : 1.4;
+      shake = Math.max(shake, 16); Sound.boom(true); vibrate(80);
+      const n = enraged ? 18 : 12, off = rand(0, 1);
+      for (let k = 0; k < n; k++) {
+        const a = off + k / n * Math.PI * 2;
+        fireEnemyBullet(e.x, e.y, Math.cos(a), Math.sin(a), 190, '#bff4ff');
+      }
+      burst(e.x, e.y, '#d8f7ff', 30, 300, 5);
+      addText(e.x, e.y - 70, 'DAZED!', '#5fe1ff', 18, 1);
+    }
+    return [e.cdx, e.cdy];
+  }
+  // stunned
+  e.speed = 0;
+  if (e.modeT <= 0) { e.mode = 'walk'; e.modeT = enraged ? 2 : 3; e.fireT = 0.5; }
+  return null;
+}
+
+// Magma Titan: meteors on marked spots, expanding fire rings with a gap, and fast imps.
+function titanAI(e, dx, dy, dt) {
+  const enraged = e.hp < e.maxHp * 0.5;
+  e.speed = enraged ? 66 : 46;
+  e.burstT -= dt; e.spawnT -= dt; e.fireT -= dt;
+  if (e.burstT <= 0) {
+    addStrike(player.x, player.y, 58, 1.3, '#ff6a1a');
+    for (let k = 0; k < (enraged ? 6 : 4); k++) { const o = openSpot(0); addStrike(o.x, o.y, 58, 1.3, '#ff6a1a'); }
+    e.burstT = enraged ? 2.2 : 3.2;
+    Sound.tone(90, 0.5, 'sawtooth', 0.05, 40);
+  }
+  if (e.fireT <= 0) {
+    fireRing(e);
+    if (enraged) e.ring2T = 0.45;   // a second ring right behind the first
+    e.fireT = enraged ? 2.6 : 3.6;
+  }
+  if (e.ring2T > 0 && (e.ring2T -= dt) <= 0) fireRing(e);
+  if (e.spawnT <= 0) { spawnMinions(e, 'runner', enraged ? 3 : 2); e.spawnT = enraged ? 4 : 5.5; }
+  return null;
+}
+
+function fireRing(e) {
+  const n = 30, gap = randi(0, n - 1);
+  for (let k = 0; k < n; k++) {
+    if (Math.abs(((k - gap + n + n / 2) % n) - n / 2) <= 2) continue;   // five-shot gap to slip through
+    const a = k / n * Math.PI * 2;
+    fireEnemyBullet(e.x, e.y, Math.cos(a), Math.sin(a), 150, '#ffb347');
+  }
+  Sound.tone(140, 0.25, 'square', 0.04, 70);
+}
+
+// The Overlord: twin cannons, bullet rings, and minions.
+function overlordAI(e, dx, dy, dt) {
   const enraged = e.hp < e.maxHp * 0.5;
   e.speed = enraged ? 72 : 45;
   e.burstT -= dt; e.spawnT -= dt; e.fireT -= dt;
@@ -937,15 +1081,27 @@ function bossAI(e, dx, dy, dt) {
     for (let k = -1; k <= 1; k++) fireEnemyBullet(e.x, e.y, Math.cos(base + k * 0.2), Math.sin(base + k * 0.2), 260);
     e.fireT = enraged ? 0.9 : 1.5;
   }
-  if (e.spawnT <= 0) {
-    for (let k = 0; k < 3; k++) {
-      const a = rand(0, Math.PI * 2);
-      const m = makeEnemy(enraged ? 'runner' : 'grunt', e.x + Math.cos(a) * 60, e.y + Math.sin(a) * 60);
-      m.cr = 0;   // no farming credits off the boss's endless minions
-      enemies.push(m);
-    }
-    e.spawnT = enraged ? 3.5 : 5;
+  if (e.spawnT <= 0) { spawnMinions(e, enraged ? 'runner' : 'grunt', 3); e.spawnT = enraged ? 3.5 : 5; }
+  return null;
+}
+
+// Strikes go off when their timer runs out; acid ones leave a puddle that burns while you stand in it.
+function updateBossHazards(dt) {
+  for (const st of strikes) {
+    if ((st.t -= dt) > 0) continue;
+    st.dead = true;
+    burst(st.x, st.y, st.color, 18, 260, 5);
+    burst(st.x, st.y, '#fff', 6, 160, 3);
+    Sound.boom(false); shake = Math.max(shake, 6);
+    if (d2(st.x, st.y, player.x, player.y) < (st.r + player.r * 0.5) ** 2) hurtPlayer();
+    if (st.puddle) puddles.push({ x: st.x, y: st.y, r: st.r * 0.8, life: 4, max: 4 });
   }
+  strikes = strikes.filter(st => !st.dead);
+  for (const pd of puddles) {
+    pd.life -= dt;
+    if (pd.life > 0.5 && d2(pd.x, pd.y, player.x, player.y) < (pd.r * 0.8) ** 2) hurtPlayer();
+  }
+  puddles = puddles.filter(pd => pd.life > 0);
 }
 
 function inArena(x, y, pad = 0) {
@@ -1390,6 +1546,114 @@ function drawOverlord(e, fl) {
   ctx.restore();
 }
 
+// Sludge Queen: a huge wobbling slime wearing a crown.
+function drawQueen(e, fl) {
+  const enraged = e.hp < e.maxHp * 0.5;
+  shadow(e.x, e.y + 40, 56, 14);
+  ctx.save(); ctx.translate(e.x, e.y);
+  const wob = Math.sin(e.t * (enraged ? 7 : 4));
+  ctx.fillStyle = fl ? WH : rgrad('queenBody', -14, -20, 70, [[0, '#e6ffcc'], [0.35, '#7be35b'], [1, '#1d6b22']]);
+  ctx.beginPath();
+  for (let k = 0; k <= 24; k++) {
+    const a = k / 24 * Math.PI * 2;
+    const r = 48 + Math.sin(a * 5 + e.t * 3) * 3 + (Math.sin(a) > 0 ? 4 : 0);
+    ctx.lineTo(Math.cos(a) * r * (1 + wob * 0.05), Math.sin(a) * r * (1 - wob * 0.05) + 4);
+  }
+  ctx.closePath(); ctx.fill();
+  outline(fl ? WH : '#0f4a18', 3);
+  if (!fl) {
+    for (let k = 0; k < 5; k++) {   // bubbles drifting up inside
+      const by = 30 - ((e.t * 18 + k * 13) % 60);
+      circle(Math.sin(k * 2.3) * 26, by, 3 + k % 3, 'rgba(230,255,200,0.35)');
+    }
+    for (const sx of [-15, 15]) {
+      circle(sx, -6, 9, '#fff');
+      const a = Math.atan2(player.y - e.y, player.x - e.x);
+      circle(sx + Math.cos(a) * 4, -6 + Math.sin(a) * 4, 4.5, enraged ? '#c00' : '#10300f');
+    }
+    ctx.strokeStyle = '#10300f'; ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.arc(0, 12, 12, 0.2, Math.PI - 0.2); ctx.stroke();
+    // crown
+    ctx.fillStyle = '#ffd43b';
+    ctx.beginPath(); ctx.moveTo(-22, -40);
+    for (let k = 0; k < 5; k++) { ctx.lineTo(-22 + k * 11 + 5.5, -60); ctx.lineTo(-22 + (k + 1) * 11, -44); }
+    ctx.lineTo(22, -38); ctx.closePath(); ctx.fill();
+    outline('#8a6400', 2);
+    circle(0, -46, 3.5, '#ff3366');
+  }
+  ctx.restore();
+}
+
+// Cryo Sentinel: an ice robot ringed with crystals and a single tracking eye.
+function drawSentinel(e, fl) {
+  const aiming = e.mode === 'aim', stunned = e.mode === 'stun';
+  shadow(e.x, e.y + 42, 54, 14);
+  ctx.save(); ctx.translate(e.x + (aiming ? rand(-1.5, 1.5) : 0), e.y);
+  ctx.save(); ctx.rotate(e.t * (e.mode === 'charge' ? 6 : 0.5));
+  for (let k = 0; k < 8; k++) {
+    ctx.rotate(Math.PI / 4);
+    ctx.fillStyle = fl ? WH : k % 2 ? '#bff4ff' : '#7fd8f5';
+    ctx.beginPath(); ctx.moveTo(36, -9); ctx.lineTo(64, 0); ctx.lineTo(36, 9); ctx.closePath(); ctx.fill();
+  }
+  ctx.restore();
+  ctx.fillStyle = fl ? WH : lgrad('sentBody', 0, -44, 0, 44, [[0, '#e8fbff'], [0.5, '#4aa8d8'], [1, '#13406a']]);
+  ctx.beginPath();
+  for (let k = 0; k < 8; k++) { const a = k / 8 * Math.PI * 2 + Math.PI / 8; ctx.lineTo(Math.cos(a) * 44, Math.sin(a) * 44); }
+  ctx.closePath(); ctx.fill();
+  outline(fl ? WH : '#0b2a45', 3);
+  if (!fl) {
+    ctx.strokeStyle = 'rgba(255,255,255,0.35)'; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(-28, -18); ctx.lineTo(-10, -32); ctx.moveTo(14, 26); ctx.lineTo(30, 10); ctx.stroke();
+    circle(0, 0, 18, '#0b1e33');
+    const a = Math.atan2(player.y - e.y, player.x - e.x);
+    const eye = stunned ? '#7a8a99' : aiming || e.mode === 'charge' ? '#ff3b3b' : '#5fe1ff';
+    circle(Math.cos(a) * 6, Math.sin(a) * 6, 11, eye);
+    circle(Math.cos(a) * 6 - 3, Math.sin(a) * 6 - 3, 3, '#fff');
+    if (stunned) for (let k = 0; k < 3; k++) {   // dizzy stars
+      const sa = e.t * 5 + k * 2.1;
+      label('✦', Math.cos(sa) * 30, -54 + Math.sin(sa) * 8, 14, '#ffe066', 'center');
+    }
+  }
+  ctx.restore();
+}
+
+// Magma Titan: a cracked rock demon with lava veins, horns and a flickering flame crown.
+function drawTitan(e, fl) {
+  const enraged = e.hp < e.maxHp * 0.5;
+  shadow(e.x, e.y + 44, 56, 14);
+  ctx.save(); ctx.translate(e.x, e.y);
+  if (!fl) for (let k = 0; k < 9; k++) {   // flame crown
+    const a = -Math.PI / 2 + (k - 4) * 0.28, h = 18 + Math.sin(e.t * 14 + k * 1.7) * 7 + (enraged ? 8 : 0);
+    ctx.fillStyle = k % 2 ? '#ffb347' : '#ff5a1f';
+    ctx.beginPath();
+    ctx.moveTo(Math.cos(a - 0.12) * 40, Math.sin(a - 0.12) * 40);
+    ctx.lineTo(Math.cos(a) * (44 + h), Math.sin(a) * (44 + h));
+    ctx.lineTo(Math.cos(a + 0.12) * 40, Math.sin(a + 0.12) * 40);
+    ctx.fill();
+  }
+  for (const s of [-1, 1]) {   // horns
+    ctx.fillStyle = fl ? WH : '#2a1a14';
+    ctx.beginPath(); ctx.moveTo(s * 22, -34); ctx.quadraticCurveTo(s * 52, -50, s * 50, -72); ctx.quadraticCurveTo(s * 40, -48, s * 10, -38); ctx.fill();
+  }
+  circle(0, 0, 46, fl ? WH : rgrad('titanBody', -14, -16, 64, [[0, '#7a4a3a'], [0.5, '#3b211a'], [1, '#160a07']]));
+  outline(fl ? WH : '#0a0402', 3);
+  if (!fl) {
+    const glow = 0.6 + 0.4 * Math.sin(e.t * (enraged ? 10 : 4));
+    ctx.strokeStyle = `rgba(255,${enraged ? 70 : 120},20,${glow})`; ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.moveTo(-30, 20); ctx.lineTo(-14, 8); ctx.lineTo(-20, -6);
+    ctx.moveTo(28, 24); ctx.lineTo(16, 10); ctx.lineTo(24, -4);
+    ctx.moveTo(-6, 36); ctx.lineTo(4, 26); ctx.lineTo(0, 16);
+    ctx.stroke();
+    for (const sx of [-15, 15]) {
+      ctx.fillStyle = '#ffe066';
+      ctx.beginPath(); ctx.moveTo(sx - 9, -14); ctx.lineTo(sx + 9, -14 + (sx < 0 ? 5 : -5)); ctx.lineTo(sx, -6); ctx.fill();
+    }
+    ctx.fillStyle = `rgba(255,90,20,${glow})`; rrect(-14, 6, 28, 8, 3); ctx.fill();
+  }
+  ctx.restore();
+}
+
 function drawEnemy(e) {
   const fl = e.hitT > 0;
   ctx.save(); ctx.translate(e.x, e.y); ctx.scale(SPR, SPR); ctx.translate(-e.x, -e.y);
@@ -1399,7 +1663,12 @@ function drawEnemy(e) {
     case 'shooter': drawDrone(e, fl); break;
     case 'splitter': drawSlime(e, fl); break;
     case 'tank': drawJuggernaut(e, fl); break;
-    case 'boss': drawOverlord(e, fl); break;
+    case 'boss':
+      if (e.kind === 'queen') drawQueen(e, fl);
+      else if (e.kind === 'sentinel') drawSentinel(e, fl);
+      else if (e.kind === 'titan') drawTitan(e, fl);
+      else drawOverlord(e, fl);
+      break;
   }
   ctx.restore();
   if (e.type !== 'boss' && e.hp < e.maxHp && e.maxHp > 3) {
@@ -1517,14 +1786,37 @@ function drawShots() {
 function drawEnemyBullets() {
   const pulse = 1 + Math.sin(time * 15) * 0.15;
   for (const b of ebullets) {
-    circle(b.x, b.y, 9 * pulse, 'rgba(255,50,120,0.3)');
-    circle(b.x, b.y, 5, '#ff4f9a');
+    const c = b.color || '#ff4f9a';
+    ctx.globalAlpha = 0.3; circle(b.x, b.y, 9 * pulse, c); ctx.globalAlpha = 1;
+    circle(b.x, b.y, 5, c);
     circle(b.x, b.y, 2.5, '#fff');
   }
 }
 
 function drawHazards() {
   const th = THEMES[themeIdx % THEMES.length];
+  for (const pd of puddles) {
+    const a = Math.min(1, pd.life / 0.8) * (0.55 + 0.1 * Math.sin(time * 6 + pd.x));
+    ctx.globalAlpha = a;
+    circle(pd.x, pd.y, pd.r, '#4fbf2a');
+    circle(pd.x - pd.r * 0.2, pd.y - pd.r * 0.2, pd.r * 0.5, '#9dff3d');
+    ctx.globalAlpha = 1;
+  }
+  for (const st of strikes) {
+    const k = 1 - st.t / st.max;
+    ctx.globalAlpha = 0.25; circle(st.x, st.y, st.r * k, st.color); ctx.globalAlpha = 1;
+    ctx.strokeStyle = st.color; ctx.lineWidth = 2.5;
+    ctx.beginPath(); ctx.arc(st.x, st.y, st.r, 0, Math.PI * 2); ctx.stroke();
+  }
+  if (boss && !boss.dead && boss.kind === 'sentinel' && boss.mode === 'aim') {
+    const b = boss, len = 1200, wdt = b.r * 1.6;
+    ctx.save(); ctx.translate(b.x, b.y); ctx.rotate(Math.atan2(b.cdy, b.cdx));
+    ctx.fillStyle = `rgba(255,60,60,${0.12 + 0.12 * Math.sin(time * 30)})`;
+    ctx.fillRect(0, -wdt / 2, len, wdt);
+    ctx.strokeStyle = 'rgba(255,80,80,0.6)'; ctx.lineWidth = 2;
+    ctx.strokeRect(0, -wdt / 2, len, wdt);
+    ctx.restore();
+  }
   for (const c of pillars) {
     const r = c.r * (0.3 + 0.7 * c.rise);
     shadow(c.x + 5, c.y + 7, r, r * 0.85);
@@ -1671,8 +1963,8 @@ function drawHud() {
   if (boss && !boss.dead) {
     const bw = Math.min(360, sw * 0.5), bx = mid - bw / 2, by = top + 54;
     ctx.fillStyle = 'rgba(0,0,0,0.6)'; ctx.fillRect(bx - 2, by - 2, bw + 4, 14);
-    ctx.fillStyle = '#ff3366'; ctx.fillRect(bx, by, bw * Math.max(0, boss.hp / boss.maxHp), 10);
-    label('BOSS', bx - 8, by + 5, 12, '#ff3366', 'right');
+    ctx.fillStyle = boss.color; ctx.fillRect(bx, by, bw * Math.max(0, boss.hp / boss.maxHp), 10);
+    label(bossDef().name, mid, by + 22, 12, boss.color, 'center');
   }
 
   // pause & mute
@@ -1985,5 +2277,5 @@ window.__arena = { get state() { return state; }, get round() { return round; },
   get enemies() { return enemies.length; }, get enemyList() { return enemies; }, get player() { return player; }, startRound, useAbility, newGame,
   get credits() { return credits; }, set credits(v) { credits = v; }, get levels() { return levels; },
   set round(v) { round = v; }, openShop, get twist() { return twist; }, set nextTwist(v) { forcedTwist = v; },
-  get pillars() { return pillars; }, get mines() { return mines; }, step: dt => { if (state === 'play') update(dt); }, spawn: (type, x, y) => enemies.push(makeEnemy(type, x, y)) };
+  get pillars() { return pillars; }, get boss() { return boss; }, setTheme, get mines() { return mines; }, step: dt => { if (state === 'play') update(dt); }, spawn: (type, x, y) => enemies.push(makeEnemy(type, x, y)) };
 })();

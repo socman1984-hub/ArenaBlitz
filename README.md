@@ -65,7 +65,13 @@ Upgrades last for the whole run and reset when you start a new game.
 - **Eye Drone**: hovers at range and shoots; its eye turns red right before it fires
 - **Slime**: splits into two Skitters when it dies
 - **Juggernaut**: an armored tank with a turret that tracks you; takes a lot of hits
-- **Overlord** (boss, every 5th round): spiked war machine with twin cannons, bullet rings, and minions. Below half health it gets faster and angrier.
+
+### Bosses
+Every 5th round is a boss fight, and each arena look has its own boss. Below half health every boss gets faster and angrier.
+- **The Overlord** (Neon Studio): spiked war machine with twin cannons, bullet rings, and minions.
+- **Sludge Queen** (Toxic Dome): lobs acid at marked spots that leave burning puddles, sprays acid, and spawns slimes.
+- **Cryo Sentinel** (Frost Rink): spins out ice shards, then aims (a red lane shows its path) and charges. After it crashes it's dazed and takes double damage.
+- **Magma Titan** (Inferno): meteors land on marked spots, fire rings expand with a gap to slip through, and it summons fast minions.
 
 Desktop controls: WASD to move, mouse or arrow keys to aim, 1/2/3 (or Q/E/R) for powers, P to pause, M to mute.
 

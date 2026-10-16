@@ -1,6 +1,16 @@
 {
-  "version": "1.4.0",
+  "version": "1.5.0",
   "releases": [
+    {
+      "version": "1.5.0",
+      "date": "Oct 16, 2026",
+      "notes": [
+        "A different boss for every arena:",
+        "Sludge Queen (Toxic Dome): acid lobs, burning puddles, slimes",
+        "Cryo Sentinel (Frost Rink): ice spirals and charges; hit it while it's dazed",
+        "Magma Titan (Inferno): meteors and fire rings with a gap to slip through"
+      ]
+    },
     {
       "version": "1.4.0",
       "date": "Oct 16, 2026",
