@@ -91,9 +91,10 @@ const Sound = {
 
 // ---------------------------------------------------------------- data
 const WEAPONS = {
-  basic:  { name: 'BLASTER', rate: 0.12, count: 1, arc: 0,    jitter: 0.03, dmg: 1 },
-  rapid:  { name: 'RAPID',   rate: 0.05, count: 1, arc: 0,    jitter: 0.09, dmg: 1 },
-  spread: { name: 'SPREAD',  rate: 0.14, count: 5, arc: 0.65, jitter: 0.02, dmg: 1 },
+  basic:  { name: 'BLASTER', rate: 0.12, count: 1, arc: 0,    jitter: 0.03, dmg: 1,   color: '#fff' },
+  rapid:  { name: 'RAPID',   rate: 0.05, count: 1, arc: 0,    jitter: 0.09, dmg: 1,   color: '#ff9f1a' },
+  spread: { name: 'SPREAD',  rate: 0.14, count: 5, arc: 0.65, jitter: 0.02, dmg: 1,   color: '#5be36b' },
+  laser:  { name: 'LASER',   rate: 0.1,  count: 1, arc: 0,    jitter: 0.01, dmg: 1.5, color: '#ff4fd8', pierce: 3, speed: 980 },
 };
 
 const ETYPES = {
@@ -108,17 +109,33 @@ const ETYPES = {
 // Upgrade shop opens after every SHOP_EVERY rounds. Prices go up by `step` per level owned.
 const SHOP_EVERY = 2;
 const UPGRADES = [
-  { id: 'damage',   icon: '💥', name: 'FIREPOWER',      desc: '+25% bullet damage',        max: 5, cost: 25, step: 20 },
-  { id: 'rate',     icon: '⚡', name: 'TRIGGER FINGER', desc: '+15% fire rate',            max: 5, cost: 25, step: 20 },
+  { id: 'damage',   icon: '💥', name: 'FIREPOWER',      desc: '+25% bullet damage',        max: 8, cost: 25, step: 20 },
+  { id: 'rate',     icon: '⚡', name: 'TRIGGER FINGER', desc: '+15% fire rate',            max: 6, cost: 25, step: 20 },
   { id: 'multi',    icon: '🔱', name: 'MULTI-SHOT',     desc: '+1 bullet per shot',        max: 3, cost: 50, step: 40 },
   { id: 'pierce',   icon: '🎯', name: 'PIERCING',       desc: 'Bullets pass through +1',   max: 3, cost: 40, step: 35 },
   { id: 'speed',    icon: '👟', name: 'SPEED BOOTS',    desc: '+10% move speed',           max: 4, cost: 20, step: 15 },
-  { id: 'hp',       icon: '🛡️', name: 'ARMOR',          desc: '+1 max heart',              max: 4, cost: 35, step: 25 },
+  { id: 'hp',       icon: '🛡️', name: 'ARMOR',          desc: '+1 max heart',              max: 6, cost: 35, step: 25 },
   { id: 'blast',    icon: '💣', name: 'EXTRA BLAST',    desc: '+1 BLAST each round',       max: 2, cost: 50, step: 40 },
   { id: 'missiles', icon: '🚀', name: 'MISSILE PODS',   desc: '+6 missiles per volley',    max: 3, cost: 30, step: 25 },
   { id: 'blades',   icon: '🌀', name: 'BLADE MASTER',   desc: '+1 blade, +2s spin time',   max: 3, cost: 30, step: 25 },
   { id: 'magnet',   icon: '🧲', name: 'MAGNET',         desc: 'Pull pickups, +50% drops',  max: 2, cost: 25, step: 25 },
+  { id: 'crit',     icon: '🍀', name: 'LUCKY SHOT',     desc: '+8% chance of 3x damage',   max: 5, cost: 30, step: 25 },
+  { id: 'regen',    icon: '💉', name: 'FIELD MEDIC',    desc: 'Heal 1 heart every round',  max: 2, cost: 60, step: 60 },
+  { id: 'surge',    icon: '⏱️', name: 'POWER SURGE',    desc: 'Gun pickups last +4s',      max: 3, cost: 25, step: 20 },
+  { id: 'over',     icon: '🔥', name: 'OVERCHARGE',     desc: '+10% damage, no limit',     max: Infinity, cost: 80, step: 40 },
 ];
+
+// Gear: bought in the shop, lasts until the next shop opens. Price grows with the round.
+const GEAR = [
+  { id: 'spread', icon: '🔱', name: 'SPREAD GUN',  desc: 'Fire 5 shots at once',       cost: 30, per: 3, gun: true },
+  { id: 'rapid',  icon: '🔫', name: 'RAPID FIRE',  desc: 'More than twice as fast',    cost: 25, per: 3, gun: true },
+  { id: 'laser',  icon: '🔴', name: 'LASER',       desc: 'Hard hits, pierces 3',       cost: 35, per: 4, gun: true },
+  { id: 'shield', icon: '🛡️', name: 'FORCE FIELD', desc: 'Blocks 2 hits each round',   cost: 30, per: 3 },
+  { id: 'drone',  icon: '🤖', name: 'BUDDY DRONE', desc: 'Helper that shoots for you', cost: 35, per: 4 },
+  { id: 'pack',   icon: '🔋', name: 'POWER PACK',  desc: '+1 of every power a round',  cost: 25, per: 3 },
+  { id: 'gems',   icon: '💎', name: 'GEM DOUBLER', desc: 'Double ◆ from kills',         cost: 40, per: 2 },
+];
+const gearCost = g => g.cost + g.per * round;
 
 const ABILITIES = [
   { id: 'blast',    name: 'BLAST',    max: 1, color: '#ff5533', keys: ['1', 'q', ' '] },
@@ -129,6 +146,7 @@ const ABILITIES = [
 const PICKUPS = {
   heart:  { color: '#ff4466', label: '♥', name: '+1 LIFE' },
   rapid:  { color: '#ff9f1a', label: 'R', name: 'RAPID FIRE!' },
+  laser:  { color: '#ff4fd8', label: 'L', name: 'LASER!' },
   spread: { color: '#5be36b', label: 'S', name: 'SPREAD GUN!' },
   charge: { color: '#33ccff', label: '⚡', name: '' },
   coin:   { color: '#4dfff0', label: '◆', name: '+10 ◆' },
@@ -197,7 +215,8 @@ let charges = [0, 0, 0];
 let best = store.get('arena_best', 0);
 let newBest = false;
 let credits = 0, levels = {}, flawless = true;
-let shopCards = [], shopMsg = null;
+let shopCards = [], shopMsg = null, shopTab = 'up', shopTabs = [];
+let gear = new Set(), drone = { a: 0, t: 0 };
 let twist = null, lastTwist = null, forcedTwist = null, lastLayout = null, themeIdx = 0;
 let pillars = [], mines = [], warps = [], strikes = [], puddles = [], seen = new Set();
 
@@ -208,10 +227,10 @@ const healCost = () => 15 + round * 2;
 function newGame() {
   player = {
     x: W / 2, y: H / 2, r: 13, hp: 5, maxHp: 5, inv: 0,
-    fireT: 0, weapon: 'basic', weaponT: 0, ax: 1, ay: 0,
+    fireT: 0, weapon: 'basic', baseWeapon: 'basic', weaponT: 0, weaponMax: 10, shield: 0, ax: 1, ay: 0,
     blades: 0, bladeA: 0, walk: 0, muzzle: 0, moving: false,
   };
-  credits = 0; levels = {};
+  credits = 0; levels = {}; gear = new Set(); shopTab = 'up';
   bullets = []; ebullets = []; enemies = []; particles = [];
   pickups = []; texts = []; missiles = []; effects = [];
   pillars = []; mines = []; warps = [];
@@ -237,7 +256,9 @@ function startRound(n) {
   spawnT = 0;
   roundPhase = 'intro'; phaseT = 2;
   flawless = true;
-  charges = ABILITIES.map(a => a.max + (a.id === 'blast' ? lvl('blast') : 0));
+  charges = ABILITIES.map(a => a.max + (a.id === 'blast' ? lvl('blast') : 0) + (gear.has('pack') ? 1 : 0));
+  applyGear();
+  if (n > 1 && lvl('regen')) player.hp = Math.min(player.maxHp, player.hp + lvl('regen'));
   const fresh = [...new Set(spawnQueue)].filter(t => INTRO[t] && !seen.has(t));
   fresh.forEach(t => seen.add(t));
   if (fresh.length) notes.push('NEW ENEMY: ' + fresh.map(t => INTRO[t]).join(', '));
@@ -245,6 +266,14 @@ function startRound(n) {
   showBanner(`ROUND ${n}`, isBoss ? `BOSS: ${bossDef().name}! ${bossDef().hint}` : tw ? `${tw.name}: ${tw.hint}` : 'POWERS RECHARGED. FIGHT!',
     notes.join('   ·   '), isBoss ? bossDef().color : tw ? tw.color : '#fff');
   if (isBoss) Sound.jingle([196, 185, 175, 165], 160);
+}
+
+function applyGear() {
+  const p = player;
+  const gun = GEAR.find(g => g.gun && gear.has(g.id));
+  p.baseWeapon = gun ? gun.id : 'basic';
+  if (p.weaponT <= 0) p.weapon = p.baseWeapon;
+  p.shield = gear.has('shield') ? 2 : 0;
 }
 
 function pickTwist(n, isBoss) {
@@ -360,7 +389,7 @@ function killEnemy(e) {
   combo++; comboT = 2;
   const pts = e.score * comboMult();
   score += pts;
-  credits += e.cr * (twist === 'cash' ? 2 : 1);
+  credits += e.cr * (twist === 'cash' ? 2 : 1) * (gear.has('gems') ? 2 : 1);
   if (e.type === 'boss') {
     burst(e.x, e.y, e.color, 90, 450, 7);
     burst(e.x, e.y, '#fff', 40, 300, 5);
@@ -376,7 +405,7 @@ function killEnemy(e) {
     Sound.boom(false);
     shake = Math.max(shake, e.r > 18 ? 6 : 2);
     addText(e.x, e.y - e.r, '+' + pts, comboMult() > 1 ? '#ffd43b' : '#fff', 12, 0.6);
-    if (Math.random() < 0.075 * (1 + 0.5 * lvl('magnet'))) dropPickup(e.x, e.y);
+    if (Math.random() < 0.055 * (1 + 0.5 * lvl('magnet'))) dropPickup(e.x, e.y);
     else if (twist === 'cash' && e.cr && Math.random() < 0.2) dropPickup(e.x, e.y, false, 'coin');
   }
   if (e.type === 'splitter') {
@@ -390,7 +419,7 @@ function killEnemy(e) {
 }
 
 function dropPickup(x, y, rich = false, type = null) {
-  const pool = [['rapid', 3], ['spread', 3], ['charge', 2.5], ['coin', rich ? 6 : 3]];
+  const pool = [['rapid', 1.5], ['spread', 1.5], ['laser', 1], ['charge', 2], ['coin', rich ? 7 : 5]];
   if (player.hp < player.maxHp) pool.push(['heart', rich ? 4 : 2]);
   const pk = { type: type || weighted(pool), x: clamp(x, WALL + 20, W - WALL - 20), y: clamp(y, WALL + 20, H - WALL - 20), life: 9, t: 0 };
   pushOutOfPillars(pk, 16);
@@ -403,7 +432,8 @@ function collect(p) {
   let label = def.name;
   switch (p.type) {
     case 'heart': player.hp = Math.min(player.maxHp, player.hp + 1); break;
-    case 'rapid': case 'spread': player.weapon = p.type; player.weaponT = 10; break;
+    case 'rapid': case 'spread': case 'laser':
+      player.weapon = p.type; player.weaponT = player.weaponMax = 10 + 4 * lvl('surge'); break;
     case 'coin': credits += 10; break;
     case 'charge': {
       const i = randi(0, ABILITIES.length - 1);
@@ -417,6 +447,13 @@ function collect(p) {
 
 function hurtPlayer() {
   if (player.inv > 0 || state !== 'play') return;
+  if (player.shield > 0) {   // force field soaks the hit
+    player.shield--; player.inv = 1;
+    burst(player.x, player.y, '#5fe1ff', 18, 220);
+    addText(player.x, player.y - 34, player.shield ? 'SHIELD!' : 'SHIELD DOWN', '#5fe1ff', 15, 0.9);
+    Sound.hit(); vibrate(40);
+    return;
+  }
   player.hp--;
   player.inv = 1.6;
   flawless = false;
@@ -474,6 +511,7 @@ function useAbility(i) {
 // ---------------------------------------------------------------- upgrade shop
 function openShop() {
   state = 'shop';
+  gear.clear();   // gear only lasts until the next shop
   shopMsg = null;
   sticks.left = sticks.right = null;
   bullets.length = 0; missiles.length = 0;
@@ -482,10 +520,20 @@ function openShop() {
 }
 
 function layoutShop() {
-  const items = [...UPGRADES.map(u => ({ kind: 'up', u })), { kind: 'heal' }, { kind: 'go' }];
-  const cols = sw - safe.l - safe.r >= 560 ? 4 : 3, rows = Math.ceil(items.length / cols);
-  const top = safe.t + 60, pad = 10, gap = 8;
-  const aw = sw - safe.l - safe.r;
+  const items = shopTab === 'up'
+    ? [...UPGRADES.map(u => ({ kind: 'up', u })), { kind: 'go' }]
+    : [...GEAR.map(g => ({ kind: 'gear', g })), { kind: 'heal' }, { kind: 'go' }];
+  const aw = sw - safe.l - safe.r, pad = 10, gap = 8;
+  const tw = Math.min(200, (aw - pad * 2 - gap) / 2), tx = safe.l + aw / 2 - tw - gap / 2;
+  shopTabs = [{ id: 'up', label: 'UPGRADES', sub: 'keep forever' }, { id: 'gear', label: 'GEAR', sub: 'next 2 rounds' }]
+    .map((t, i) => ({ ...t, x: tx + i * (tw + gap), y: safe.t + 58, w: tw, h: 30 }));
+  const top = safe.t + 96;
+  let cols = 3;
+  for (; cols < 6; cols++) {   // fewest columns that still leaves the cards tall enough
+    const r = Math.ceil(items.length / cols);
+    if ((sh - safe.b - top - pad - gap * (r - 1)) / r >= 66) break;
+  }
+  const rows = Math.ceil(items.length / cols);
   const cw = Math.min(220, (aw - pad * 2 - gap * (cols - 1)) / cols);
   const ch = Math.min(100, (sh - safe.b - top - pad - gap * (rows - 1)) / rows);
   const x0 = safe.l + (aw - (cw * cols + gap * (cols - 1))) / 2;
@@ -497,9 +545,22 @@ function layoutShop() {
 
 function shopSay(text, color = '#ff6b6b') { shopMsg = { text, color, t: 1.6 }; }
 
+function setShopTab(t) {
+  if (t === shopTab) return;
+  shopTab = t; layoutShop(); Sound.tone(660, 0.05, 'square', 0.03);
+}
+
 function buy(c) {
   if (c.kind === 'go') { state = 'play'; startRound(round + 1); return; }
-  if (c.kind === 'heal') {
+  if (c.kind === 'gear') {
+    const g = c.g;
+    if (gear.has(g.id)) { shopSay('Already equipped'); Sound.denied(); return; }
+    if (g.gun && GEAR.some(o => o.gun && gear.has(o.id))) { shopSay('You can only carry one gun'); Sound.denied(); return; }
+    if (credits < gearCost(g)) { shopSay('Not enough ◆'); Sound.denied(); return; }
+    credits -= gearCost(g);
+    gear.add(g.id);
+    shopSay(`${g.name} equipped for 2 rounds`, '#7CFC00');
+  } else if (c.kind === 'heal') {
     if (player.hp >= player.maxHp) { shopSay('Already at full health'); Sound.denied(); return; }
     if (credits < healCost()) { shopSay('Not enough ◆'); Sound.denied(); return; }
     credits -= healCost();
@@ -662,6 +723,7 @@ function handleTap(x, y) {
   if (state === 'title') { goFullscreen(); newGame(); return true; }
   if (state === 'over') { if (overT > 1) { if (updateReady) location.reload(); else newGame(); } return true; }
   if (state === 'shop') {
+    for (const t of shopTabs) if (x >= t.x && x <= t.x + t.w && y >= t.y && y <= t.y + t.h) { setShopTab(t.id); return true; }
     for (const c of shopCards) {
       if (x >= c.x && x <= c.x + c.w && y >= c.y && y <= c.y + c.h) { buy(c); break; }
     }
@@ -725,6 +787,7 @@ window.addEventListener('keydown', e => {
   if (state === 'title' && (k === 'enter' || k === ' ')) { newGame(); return; }
   if (state === 'over' && (k === 'enter' || k === ' ') && overT > 1) { if (updateReady) location.reload(); else newGame(); return; }
   if (state === 'shop' && k === 'enter') { buy(shopCards[shopCards.length - 1]); return; }
+  if (state === 'shop' && (k === 'tab' || k === 'arrowleft' || k === 'arrowright')) { e.preventDefault(); setShopTab(shopTab === 'up' ? 'gear' : 'up'); return; }
   if (state !== 'play') return;
   if (k === 'p' || k === 'escape') { paused = !paused; return; }
   if (k === 'm') { Sound.muted = !Sound.muted; store.set('arena_muted', Sound.muted); return; }
@@ -834,10 +897,10 @@ function updatePlayer(dt) {
   if (al > 0.001) { p.ax = ax / al; p.ay = ay / al; }
 
   // always shooting
-  if (p.weaponT > 0) { p.weaponT -= dt; if (p.weaponT <= 0) p.weapon = 'basic'; }
+  if (p.weaponT > 0) { p.weaponT -= dt; if (p.weaponT <= 0) p.weapon = p.baseWeapon; }
   const w = WEAPONS[twist === 'overdrive' && p.weapon === 'basic' ? 'rapid' : p.weapon];
   const count = w.count + lvl('multi'), arc = w.arc + lvl('multi') * 0.14;
-  const dmg = w.dmg * (1 + 0.25 * lvl('damage'));
+  const dmg = w.dmg * dmgMult(), spd = w.speed || 640;
   p.fireT -= dt;
   while (p.fireT <= 0) {
     const base = Math.atan2(p.ay, p.ax);
@@ -845,8 +908,8 @@ function updatePlayer(dt) {
       const a = base + (count > 1 ? (k / (count - 1) - 0.5) * arc : 0) + rand(-w.jitter, w.jitter);
       bullets.push({
         x: p.x + Math.cos(base) * 14, y: p.y - 2 + Math.sin(base) * 14,   // close in, so huggers still get hit
-        vx: Math.cos(a) * 640, vy: Math.sin(a) * 640, r: 7, dmg, life: 1.2,
-        pierce: lvl('pierce'), hits: null,
+        vx: Math.cos(a) * spd, vy: Math.sin(a) * spd, r: 7, dmg: rollCrit(dmg), life: 1.2,
+        pierce: lvl('pierce') + (w.pierce || 0), hits: null, color: w.speed ? w.color : null,
       });
     }
     p.fireT += w.rate / (1 + 0.15 * lvl('rate'));
@@ -855,7 +918,24 @@ function updatePlayer(dt) {
   }
   if (p.muzzle > 0) p.muzzle -= dt;
   if (p.inv > 0) p.inv -= dt;
+
+  // buddy drone: circles you and plinks the nearest enemy
+  if (gear.has('drone')) {
+    drone.a += dt * 2.2;
+    drone.x = p.x + Math.cos(drone.a) * 42; drone.y = p.y + Math.sin(drone.a) * 30 - 10;
+    drone.t -= dt;
+    const t = nearestEnemy(drone.x, drone.y);
+    if (t && drone.t <= 0 && d2(t.x, t.y, drone.x, drone.y) < 460 * 460) {
+      drone.t = 0.3 / (1 + 0.15 * lvl('rate'));
+      const a = Math.atan2(t.y - drone.y, t.x - drone.x);
+      bullets.push({ x: drone.x, y: drone.y, vx: Math.cos(a) * 700, vy: Math.sin(a) * 700, r: 6,
+        dmg: rollCrit(dmgMult()), life: 1, pierce: 0, hits: null, color: '#7CFC00' });
+    }
+  }
 }
+
+const dmgMult = () => (1 + 0.25 * lvl('damage')) * (1 + 0.1 * lvl('over'));
+const rollCrit = d => Math.random() < 0.08 * lvl('crit') ? d * 3 : d;
 
 function updateEnemies(dt) {
   const p = player;
@@ -1767,14 +1847,36 @@ function drawPlayer() {
   }
 }
 
+function drawGearFx() {
+  const p = player;
+  if (state === 'over') return;
+  if (p.shield > 0) {
+    ctx.strokeStyle = `rgba(95,225,255,${0.45 + 0.2 * Math.sin(time * 6)})`; ctx.lineWidth = p.shield > 1 ? 3 : 1.5;
+    ctx.beginPath(); ctx.arc(p.x, p.y - 4, 28, 0, Math.PI * 2); ctx.stroke();
+  }
+  if (gear.has('drone') && drone.x !== undefined) {
+    shadow(drone.x, drone.y + 22, 7, 3);
+    circle(drone.x, drone.y, 9, '#4caf50');
+    circle(drone.x - 2.5, drone.y - 2.5, 3, 'rgba(255,255,255,0.45)');
+    circle(drone.x, drone.y + 1, 3.5, '#111');
+    circle(drone.x + 1, drone.y, 1.3, '#7CFC00');
+  }
+}
+
 function drawShots() {
   ctx.lineCap = 'round';
   ctx.strokeStyle = 'rgba(255,224,102,0.35)'; ctx.lineWidth = 8;
   ctx.beginPath();
-  for (const b of bullets) { ctx.moveTo(b.x - b.vx * 0.02, b.y - b.vy * 0.02); ctx.lineTo(b.x, b.y); }
+  for (const b of bullets) if (!b.color) { ctx.moveTo(b.x - b.vx * 0.02, b.y - b.vy * 0.02); ctx.lineTo(b.x, b.y); }
   ctx.stroke();
   ctx.strokeStyle = '#fff3b0'; ctx.lineWidth = 3.5;
   ctx.stroke();
+  for (const b of bullets) {   // laser and drone shots get their own color
+    if (!b.color) continue;
+    ctx.strokeStyle = b.color; ctx.lineWidth = 6; ctx.globalAlpha = 0.5;
+    ctx.beginPath(); ctx.moveTo(b.x - b.vx * 0.025, b.y - b.vy * 0.025); ctx.lineTo(b.x, b.y); ctx.stroke();
+    ctx.globalAlpha = 1; ctx.strokeStyle = '#fff'; ctx.lineWidth = 2; ctx.stroke();
+  }
 
   for (const m of missiles) {
     ctx.save(); ctx.translate(m.x, m.y); ctx.rotate(m.a);
@@ -1952,9 +2054,17 @@ function drawHud() {
   if (combo >= 5) { label(`x${comboMult()} COMBO ${combo}`, left, y, 14, '#ffd43b'); y += 20; }
   if (p.weapon !== 'basic') {
     const w = WEAPONS[p.weapon];
-    label(w.name, left, y, 13, p.weapon === 'rapid' ? '#ff9f1a' : '#5be36b');
-    ctx.fillStyle = 'rgba(255,255,255,0.2)'; ctx.fillRect(left + 62, y - 3, 60, 6);
-    ctx.fillStyle = '#fff'; ctx.fillRect(left + 62, y - 3, 60 * Math.max(0, p.weaponT / 10), 6);
+    label(w.name, left, y, 13, w.color);
+    if (p.weaponT > 0) {
+      ctx.fillStyle = 'rgba(255,255,255,0.2)'; ctx.fillRect(left + 62, y - 3, 60, 6);
+      ctx.fillStyle = '#fff'; ctx.fillRect(left + 62, y - 3, 60 * Math.max(0, p.weaponT / p.weaponMax), 6);
+    }
+    y += 20;
+  }
+  const gearIcons = GEAR.filter(g => gear.has(g.id) && !g.gun).map(g => g.icon).join(' ');
+  if (gearIcons) {   // what you bought this stretch
+    ctx.font = '13px system-ui, sans-serif'; ctx.textAlign = 'left'; ctx.textBaseline = 'middle'; ctx.fillStyle = '#fff';
+    ctx.fillText(gearIcons, left, y);
   }
 
   const mid = offX + W * scale / 2;
@@ -2014,8 +2124,18 @@ function drawShop() {
   if (shopMsg) label(shopMsg.text, sw - safe.r - 14, safe.t + 44, 13, shopMsg.color, 'right');
   label(`Next: round ${round + 1}`, safe.l + 14, safe.t + 44, 12, 'rgba(255,255,255,0.55)', 'left', 'normal');
 
+  for (const t of shopTabs) {
+    const on = t.id === shopTab;
+    ctx.fillStyle = on ? 'rgba(255,224,102,0.22)' : 'rgba(255,255,255,0.05)';
+    rrect(t.x, t.y, t.w, t.h, 8); ctx.fill();
+    outline(on ? '#ffe066' : 'rgba(255,255,255,0.18)', on ? 2 : 1);
+    label(t.label, t.x + t.w / 2, t.y + 11, 13, on ? '#ffe066' : '#fff', 'center');
+    label(t.sub, t.x + t.w / 2, t.y + 23, 10, 'rgba(255,255,255,0.6)', 'center', 'normal');
+  }
+
+  const hasGun = GEAR.some(o => o.gun && gear.has(o.id));
   for (const c of shopCards) {
-    let title, desc, icon, cost = 0, can = false, maxed = false, pips = null;
+    let title, desc, icon, cost = 0, can = false, maxed = false, pips = null, owned = false;
     if (c.kind === 'go') {
       ctx.fillStyle = c.flash > 0 ? '#9dff8a' : '#2fa84f';
       rrect(c.x, c.y, c.w, c.h, 10); ctx.fill();
@@ -2026,6 +2146,11 @@ function drawShop() {
     if (c.kind === 'heal') {
       title = 'MED KIT'; desc = 'Refill all hearts'; icon = '❤️';
       cost = healCost(); can = credits >= cost && player.hp < player.maxHp;
+    } else if (c.kind === 'gear') {
+      const g = c.g;
+      title = g.name; desc = g.desc; icon = g.icon;
+      owned = gear.has(g.id); cost = gearCost(g);
+      can = !owned && !(g.gun && hasGun) && credits >= cost;
     } else {
       const u = c.u;
       title = u.name; desc = u.desc; icon = u.icon;
@@ -2036,7 +2161,7 @@ function drawShop() {
     ctx.fillStyle = c.flash > 0 ? 'rgba(124,252,0,0.35)' : can ? 'rgba(255,255,255,0.09)' : 'rgba(255,255,255,0.035)';
     rrect(c.x, c.y, c.w, c.h, 10); ctx.fill();
     outline(can ? 'rgba(77,255,240,0.7)' : 'rgba(255,255,255,0.12)', can ? 2 : 1);
-    ctx.globalAlpha = can || maxed ? 1 : 0.55;
+    ctx.globalAlpha = can || maxed || owned ? 1 : 0.55;
     const iconS = Math.min(24, c.h * 0.3);
     ctx.font = `${iconS}px system-ui, sans-serif`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
     ctx.fillStyle = '#fff';
@@ -2047,13 +2172,15 @@ function drawShop() {
     ctx.fillStyle = '#fff'; ctx.fillText(title, tx, c.y + c.h * 0.22, maxW);
     ctx.font = `${ts - 2}px system-ui, sans-serif`; ctx.fillStyle = '#b8b8c8';
     ctx.fillText(desc, tx, c.y + c.h * 0.45, maxW);
-    if (pips) {
+    if (pips && pips[1] === Infinity) label(`LV ${pips[0]}`, c.x + 10, c.y + c.h - 12, 12, '#7CFC00');
+    else if (pips) {
       for (let i = 0; i < pips[1]; i++) {
         ctx.fillStyle = i < pips[0] ? '#7CFC00' : 'rgba(255,255,255,0.18)';
         ctx.fillRect(c.x + 10 + i * 11, c.y + c.h - 16, 8, 8);
       }
     }
     if (maxed) label('MAX', c.x + c.w - 10, c.y + c.h - 12, 13, '#7CFC00', 'right');
+    else if (owned) label('EQUIPPED', c.x + c.w - 10, c.y + c.h - 12, 12, '#7CFC00', 'right');
     else {
       ctx.font = 'bold 14px system-ui, sans-serif';
       const cw2 = ctx.measureText(`${cost}`).width;
@@ -2144,6 +2271,7 @@ function render() {
     drawPickups();
     for (const e of enemies) drawEnemy(e);
     drawPlayer();
+    drawGearFx();
     drawShots();
     drawFx();
     if (twist === 'lights' && state === 'play' && roundPhase !== 'clear') drawDarkness();

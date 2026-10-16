@@ -13,7 +13,7 @@ Open the link on your phone, turn it sideways, and use "Add to Home Screen" to i
   - **MISSILES** (2 per round): 14 homing missiles
   - **BLADES** (1 per round): spinning saws orbit you for 8 seconds
 - Enemies pour in through the four doors. Clear them all to finish the round. Every 5th round has a boss.
-- Pickups: ♥ extra life, **R** rapid fire, **S** spread gun, ⚡ an extra power charge, **◆** 10 credits.
+- Pickups (rarer now; mostly ◆ so you can choose what to buy): ♥ extra life, **R** rapid fire, **S** spread gun, **L** laser, ⚡ an extra power charge, **◆** 10 credits.
 - Kill quickly to build a combo multiplier (up to x5).
 - If your thumb covers your guy, a zoomed-in bubble of him pops up just above so you can still see him.
 
@@ -41,23 +41,39 @@ You earn **◆ credits** as you play:
 - Flawless round (you took no hits): +10 more.
 - ◆ pickups: +10.
 
-The **Upgrade Shop** opens after every 2 rounds. Prices go up with each level you buy:
+The **Upgrade Shop** opens after every 2 rounds. It has two tabs.
+
+**UPGRADES** last for the whole run. Prices go up with each level you buy:
 
 | Upgrade | Effect per level | Max |
 |---|---|---|
-| Firepower | +25% bullet damage | 5 |
-| Trigger Finger | +15% fire rate | 5 |
+| Firepower | +25% bullet damage | 8 |
+| Trigger Finger | +15% fire rate | 6 |
 | Multi-Shot | +1 bullet per shot | 3 |
 | Piercing | bullets pass through +1 enemy | 3 |
 | Speed Boots | +10% move speed | 4 |
-| Armor | +1 max heart | 4 |
+| Armor | +1 max heart | 6 |
 | Extra Blast | +1 BLAST each round | 2 |
 | Missile Pods | +6 missiles per volley | 3 |
 | Blade Master | +1 blade and +2s spin time | 3 |
 | Magnet | pulls pickups to you, +50% drop rate | 2 |
-| Med Kit | refill all hearts (can be bought again) | — |
+| Lucky Shot | +8% chance a bullet does triple damage | 5 |
+| Field Medic | heal 1 heart at the start of every round | 2 |
+| Power Surge | gun pickups last +4s | 3 |
+| Overcharge | +10% damage | no limit |
 
-Upgrades last for the whole run and reset when you start a new game.
+**GEAR** lasts until the next shop (2 rounds). The price goes up with the round number:
+
+| Gear | Effect |
+|---|---|
+| Spread Gun / Rapid Fire / Laser | your gun for both rounds (one at a time); gun pickups still work on top |
+| Force Field | blocks 2 hits each round |
+| Buddy Drone | a helper that circles you and shoots the nearest enemy |
+| Power Pack | +1 of every power each round |
+| Gem Doubler | double ◆ from kills |
+| Med Kit | refill all hearts |
+
+Upgrades and gear reset when you start a new game.
 
 ## Enemies
 - **Brute**: masked thug with a spiked club who charges straight at you

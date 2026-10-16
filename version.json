@@ -1,6 +1,17 @@
 {
-  "version": "1.5.1",
+  "version": "1.6.0",
   "releases": [
+    {
+      "version": "1.6.0",
+      "date": "Oct 16, 2026",
+      "notes": [
+        "Shop now has a GEAR tab: start rounds with Spread, Rapid or the new Laser",
+        "Gear also has Force Field, Buddy Drone, Power Pack and Gem Doubler",
+        "New upgrades: Lucky Shot, Field Medic, Power Surge, Overcharge (no limit)",
+        "Higher caps on Firepower, Trigger Finger and Armor",
+        "Fewer random drops, more gems, so you choose your power-ups"
+      ]
+    },
     {
       "version": "1.5.1",
       "date": "Oct 16, 2026",
