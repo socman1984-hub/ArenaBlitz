@@ -1,6 +1,13 @@
 {
-  "version": "1.5.0",
+  "version": "1.5.1",
   "releases": [
+    {
+      "version": "1.5.1",
+      "date": "Oct 16, 2026",
+      "notes": [
+        "Fixed late rounds where the last enemies got stuck outside the arena and the round never ended"
+      ]
+    },
     {
       "version": "1.5.0",
       "date": "Oct 16, 2026",

@@ -314,11 +314,12 @@ function makeEnemy(type, x, y) {
 }
 
 function spawnFromDoor(type, door, i) {
-  const side = (i - 1) * 24;
+  // Big groups queue up three abreast behind the door, so nobody starts outside the doorway
+  const side = (i % 3 - 1) * 24, back = 12 + Math.floor(i / 3) * 34;
   const e = makeEnemy(type,
-    door.x + (door.nx === 0 ? side : 0) - door.nx * 12,
-    door.y + (door.ny === 0 ? side : 0) - door.ny * 12);
-  e.entering = true; e.dnx = door.nx; e.dny = door.ny;
+    door.x + (door.nx === 0 ? side : 0) - door.nx * back,
+    door.y + (door.ny === 0 ? side : 0) - door.ny * back);
+  e.entering = true; e.dnx = door.nx; e.dny = door.ny; e.enterT = 0;
   enemies.push(e);
   if (type === 'boss') boss = e;
 }
@@ -867,6 +868,8 @@ function updateEnemies(dt) {
     if (e.entering) {
       const s = Math.max(e.speed, 90);
       e.x += e.dnx * s * dt; e.y += e.dny * s * dt;
+      // failsafe: never let anyone wander off outside the arena while walking in
+      if ((e.enterT += dt) > 4) { e.x = clamp(e.x, WALL + e.r + 1, W - WALL - e.r - 1); e.y = clamp(e.y, WALL + e.r + 1, H - WALL - e.r - 1); }
       if (e.x > WALL + e.r && e.x < W - WALL - e.r && e.y > WALL + e.r && e.y < H - WALL - e.r) e.entering = false;
       continue;
     }
