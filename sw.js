@@ -1,5 +1,5 @@
 // Offline cache so the game works without a connection once installed.
-const CACHE = 'arena-blitz-v10';
+const CACHE = 'arena-blitz-v11';
 const FILES = ['./', 'index.html', 'game.js', 'manifest.json', 'icon.svg', 'version.json'];
 
 self.addEventListener('install', e => {
@@ -15,7 +15,7 @@ self.addEventListener('activate', e => {
 
 // Network first (so updates show up), fall back to cache when offline.
 self.addEventListener('fetch', e => {
-  if (e.request.method !== 'GET') return;
+  if (e.request.method !== 'GET' || new URL(e.request.url).origin !== location.origin) return;
   e.respondWith(
     // 'no-cache' asks the server whether files changed, so updates show up right away.
     fetch(e.request.url, { cache: 'no-cache' }).then(res => {

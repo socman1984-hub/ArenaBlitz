@@ -34,6 +34,26 @@ Open the link on your phone, turn it sideways, and use "Add to Home Screen" to i
 | Lights Out | Only the area around you is lit; enemy eyes and bullets still glow |
 | Heavy Metal | Fewer enemies, all big ones |
 
+## Playing with friends
+Up to 4 players, each on their own phone:
+1. One player taps **HOST GAME** and gets a 4-letter room code.
+2. Everyone else taps **JOIN GAME** and types the code.
+3. The host taps **START**. You can also start alone and let friends drop in later; anyone who joins mid-game is in from the next round, with some ◆ to catch up.
+
+How it works: the host's phone runs the game and streams it to everyone else. Your own movement runs on your own phone, so it feels instant. PeerJS, a free service, only helps the phones find each other, so it needs an internet connection; solo play still works offline. A few strict networks (some school or work Wi-Fi, a few cell carriers) block direct phone-to-phone links. If joining hangs on "Connecting…", try switching between Wi-Fi and mobile data.
+
+The game scales with the number of players:
+
+| | Solo | 2 players | 3 players | 4 players |
+|---|---|---|---|---|
+| Enemies per round | 1× | 1.6× | 2.2× | 2.8× |
+| Enemy health | 1× | 1.15× | 1.3× | 1.45× |
+| Boss health | 1× | 1.8× | 2.6× | 3.4× |
+
+- Everyone has their own hearts, powers, upgrades and ◆. Every kill pays everyone. Bigger waves pay less per kill, so each player earns about what they would solo.
+- Run out of hearts and you're a ghost until the next round, then you come back with half your hearts. The game ends when the whole team is down.
+- The shop waits until everyone taps **READY**. Pausing pauses for everyone.
+
 ## Upgrades
 You earn **◆ credits** as you play:
 - Every kill: brute/bug 1, drone/slime 2, juggernaut 4, boss 40. The boss's summoned minions give none.

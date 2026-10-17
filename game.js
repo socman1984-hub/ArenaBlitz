@@ -31,6 +31,7 @@ const store = {
   set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} },
 };
 const vibrate = ms => { try { navigator.vibrate && navigator.vibrate(ms); } catch (e) {} };
+let netOut = null;   // while hosting: effects and sounds queued up to replay on friends' phones
 
 // ---------------------------------------------------------------- sound
 const Sound = {
@@ -45,7 +46,8 @@ const Sound = {
     }
     if (this.ctx.state === 'suspended') this.ctx.resume();
   },
-  tone(f, dur, type = 'square', vol = 0.05, f2 = null) {
+  tone(...a) { this.beep(...a); },
+  beep(f, dur, type = 'square', vol = 0.05, f2 = null) {
     if (this.muted || !this.ctx) return;
     const t = this.ctx.currentTime, o = this.ctx.createOscillator(), g = this.ctx.createGain();
     o.type = type;
@@ -73,21 +75,27 @@ const Sound = {
     const now = performance.now();
     if (now - this.lastShot < 75) return;
     this.lastShot = now;
-    this.tone(rand(820, 900), 0.05, 'square', 0.012, 300);
+    this.beep(rand(820, 900), 0.05, 'square', 0.012, 300);
   },
-  hit() { this.tone(rand(180, 240), 0.05, 'square', 0.02, 90); },
+  hit() { this.beep(rand(180, 240), 0.05, 'square', 0.02, 90); },
   boom(big) {
     const now = performance.now();
     if (!big && now - this.lastBoom < 40) return;
     this.lastBoom = now;
     this.noise(big ? 0.9 : 0.25, big ? 0.35 : 0.1, big ? 2200 : 900);
   },
-  hurt() { this.tone(220, 0.3, 'sawtooth', 0.08, 50); },
-  pickup() { this.tone(660, 0.08, 'square', 0.04); setTimeout(() => this.tone(990, 0.1, 'square', 0.04), 70); },
-  power() { this.tone(160, 0.45, 'sawtooth', 0.06, 1400); },
-  denied() { this.tone(110, 0.12, 'square', 0.04); },
-  jingle(notes, gap = 110) { notes.forEach((f, i) => setTimeout(() => this.tone(f, 0.16, 'square', 0.045), i * gap)); },
+  hurt() { this.beep(220, 0.3, 'sawtooth', 0.08, 50); },
+  pickup() { this.beep(660, 0.08, 'square', 0.04); setTimeout(() => this.beep(990, 0.1, 'square', 0.04), 70); },
+  power() { this.beep(160, 0.45, 'sawtooth', 0.06, 1400); },
+  denied() { this.beep(110, 0.12, 'square', 0.04); },
+  jingle(notes, gap = 110) { notes.forEach((f, i) => setTimeout(() => this.beep(f, 0.16, 'square', 0.045), i * gap)); },
 };
+// Game sounds also play on friends' phones. (Shop and menu sounds call these through localSound.)
+for (const k of ['tone', 'shot', 'hit', 'boom', 'hurt', 'pickup', 'power', 'jingle']) {
+  const f = Sound[k];
+  Sound[k] = function (...a) { if (netOut) netOut.push(['s', k, a]); return f.apply(this, a); };
+}
+function localSound(fn) { const o = netOut; netOut = null; try { fn(); } finally { netOut = o; } }
 
 // ---------------------------------------------------------------- data
 const WEAPONS = {
@@ -137,7 +145,7 @@ const GEAR = [
   { id: 'pack',   icon: '🔋', name: 'POWER PACK',  desc: '+1 of every power',          cost: 20, per: 2, once: true },
 ];
 const gearCost = g => Math.round(g.cost + g.per * round);
-const buffTime = () => 10 + 4 * lvl('surge');   // same length as a gun pickup
+const buffTime = (p = me) => 10 + 4 * L(p, 'surge');   // same length as a gun pickup
 
 const ABILITIES = [
   { id: 'blast',    name: 'BLAST',    max: 1, color: '#ff5533', keys: ['1', 'q', ' '] },
@@ -208,32 +216,50 @@ const INTRO = {
 // ---------------------------------------------------------------- state
 let state = 'title';      // notes | title | play | shop | over
 let paused = false;
-let player, bullets, ebullets, enemies, particles, pickups, texts, missiles, effects, boss;
+let players = [], me = null;   // me = the player this phone controls
+let bullets = [], ebullets = [], enemies = [], particles = [], pickups = [], texts = [], missiles = [], effects = [], boss = null;
 let round = 0, score = 0, combo = 0, comboT = 0;
 let spawnQueue = [], spawnT = 0, roundPhase = 'intro', phaseT = 0;
 let shake = 0, flash = 0, flashColor = '255,255,255', time = 0, overT = 0;
 let banner = null;
-let charges = [0, 0, 0];
 let best = store.get('arena_best', 0);
 let newBest = false;
-let credits = 0, levels = {}, flawless = true;
 let shopCards = [], shopMsg = null, shopTab = 'up', shopTabs = [];
-let gear = new Set(), drone = { a: 0, t: 0 };   // gear = bought for the next round
-let buffs = { shield: 0, drone: 0, gems: 0 }, buffMax = 10;   // seconds left on bought buffs
+let nPlayers = 1, crowd = 1, nextEid = 1, enemiesLeft = 0;   // crowd = how much bigger waves are with friends
 let twist = null, lastTwist = null, forcedTwist = null, lastLayout = null, themeIdx = 0;
 let pillars = [], mines = [], warps = [], strikes = [], puddles = [], seen = new Set();
 
-const lvl = id => levels[id] || 0;
-const upgradeCost = u => u.cost + u.step * lvl(u.id);
+const L = (p, id) => p.levels[id] || 0;   // a player's upgrade level
+const lvl = id => L(me, id);
+const upgradeCost = (u, p = me) => u.cost + u.step * L(p, u.id);
 const healCost = () => 15 + round * 2;
+const alive = () => players.filter(p => !p.down);
+
+// Each player's suit color.
+const PCOL = [
+  { main: '#6bb4ff', dark: '#1a52a8', edge: '#0c2a5a', pad: '#2f74d0', tag: '#33ccff' },
+  { main: '#ff9a8a', dark: '#b8261b', edge: '#5a0c0c', pad: '#d0402f', tag: '#ff6b6b' },
+  { main: '#9dff8a', dark: '#1f9a3a', edge: '#0c4a1a', pad: '#2fb04f', tag: '#7CFC00' },
+  { main: '#ffe27a', dark: '#c08a12', edge: '#5a400c', pad: '#d0a02f', tag: '#ffd43b' },
+];
+const pname = p => 'P' + (p.pid + 1);
+
+function makePlayer(pid) {
+  return {
+    pid, x: W / 2, y: H / 2, r: 13, hp: 5, maxHp: 5, inv: 0,
+    fireT: 0, weapon: 'basic', weaponT: 0, weaponMax: 10, shield: 0, ax: 1, ay: 0,
+    blades: 0, bladeA: 0, walk: 0, muzzle: 0, moving: false, down: false, joining: false,
+    credits: 0, levels: {}, charges: [0, 0, 0], gear: [], buffs: { shield: 0, drone: 0, gems: 0 }, buffMax: 10,
+    drone: { a: pid * 1.6, t: 0 }, flawless: true, ready: false,
+  };
+}
 
 function newGame() {
-  player = {
-    x: W / 2, y: H / 2, r: 13, hp: 5, maxHp: 5, inv: 0,
-    fireT: 0, weapon: 'basic', weaponT: 0, weaponMax: 10, shield: 0, ax: 1, ay: 0,
-    blades: 0, bladeA: 0, walk: 0, muzzle: 0, moving: false,
-  };
-  credits = 0; levels = {}; gear = new Set(); shopTab = 'up'; buffs = { shield: 0, drone: 0, gems: 0 };
+  const pids = net.role === 'host' ? [0, ...[...net.peers.values()].map(c => c.pid)] : [0];
+  players = pids.sort().map(makePlayer);
+  me = players[0];
+  players.forEach((p, i) => { p.x = W / 2 + (i - (players.length - 1) / 2) * 50; });
+  shopTab = 'up';
   bullets = []; ebullets = []; enemies = []; particles = [];
   pickups = []; texts = []; missiles = []; effects = [];
   pillars = []; mines = []; warps = [];
@@ -247,6 +273,9 @@ function newGame() {
 
 function startRound(n) {
   round = n;
+  nPlayers = players.length;
+  crowd = 1 + 0.6 * (nPlayers - 1);
+  for (const p of players) if (p.down) revive(p);
   const isBoss = n % 5 === 0;
   const notes = [];
   if ((n - 1) % 5 === 0) {
@@ -258,10 +287,12 @@ function startRound(n) {
   spawnQueue = buildWave(n);
   spawnT = 0;
   roundPhase = 'intro'; phaseT = 2;
-  flawless = true;
-  charges = ABILITIES.map(a => a.max + (a.id === 'blast' ? lvl('blast') : 0) + (gear.has('pack') ? 1 : 0));
-  buffs = { shield: 0, drone: 0, gems: 0 }; player.shield = 0;
-  if (n > 1 && lvl('regen')) player.hp = Math.min(player.maxHp, player.hp + lvl('regen'));
+  for (const p of players) {
+    p.flawless = true; p.ready = false;
+    p.charges = ABILITIES.map(a => a.max + (a.id === 'blast' ? L(p, 'blast') : 0) + (p.gear.includes('pack') ? 1 : 0));
+    p.buffs = { shield: 0, drone: 0, gems: 0 }; p.shield = 0;
+    if (n > 1 && L(p, 'regen')) p.hp = Math.min(p.maxHp, p.hp + L(p, 'regen'));
+  }
   const fresh = [...new Set(spawnQueue)].filter(t => INTRO[t] && !seen.has(t));
   fresh.forEach(t => seen.add(t));
   if (fresh.length) notes.push('NEW ENEMY: ' + fresh.map(t => INTRO[t]).join(', '));
@@ -271,23 +302,33 @@ function startRound(n) {
   if (isBoss) Sound.jingle([196, 185, 175, 165], 160);
 }
 
-// Switch on whatever was bought in the shop. Called when the fight starts.
-function activateGear() {
-  if (!gear.size) return;
-  const p = player, t = buffTime();
-  const gun = GEAR.find(g => g.gun && gear.has(g.id));
-  if (gun) { p.weapon = gun.id; p.weaponT = p.weaponMax = t; }
-  buffMax = t;
-  for (const id of ['shield', 'drone', 'gems']) if (gear.has(id)) buffs[id] = t;
-  if (gear.has('shield')) p.shield = 2;
-  gear.clear();
-  Sound.power();
-  addText(p.x, p.y - 34, 'GEAR ON!', '#7CFC00', 16, 1);
+// A downed player comes back at the start of the next round (someone who just joined comes in fresh).
+function revive(p) {
+  p.down = false;
+  p.hp = p.joining ? p.maxHp : Math.max(1, Math.ceil(p.maxHp / 2));
+  p.joining = false; p.inv = 2;
+  p.x = W / 2 + rand(-60, 60); p.y = H / 2 + rand(-40, 40);
 }
 
-function updateBuffs(dt) {
-  for (const id in buffs) if (buffs[id] > 0) buffs[id] = Math.max(0, buffs[id] - dt);
-  if (buffs.shield <= 0) player.shield = 0;
+// Switch on whatever was bought in the shop. Called when the fight starts.
+function activateGear() {
+  for (const p of players) {
+    if (!p.gear.length) continue;
+    const t = buffTime(p);
+    const gun = GEAR.find(g => g.gun && p.gear.includes(g.id));
+    if (gun) { p.weapon = gun.id; p.weaponT = p.weaponMax = t; }
+    p.buffMax = t;
+    for (const id of ['shield', 'drone', 'gems']) if (p.gear.includes(id)) p.buffs[id] = t;
+    if (p.gear.includes('shield')) p.shield = 2;
+    p.gear = [];
+    Sound.power();
+    addText(p.x, p.y - 34, 'GEAR ON!', '#7CFC00', 16, 1);
+  }
+}
+
+function updateBuffs(p, dt) {
+  for (const id in p.buffs) if (p.buffs[id] > 0) p.buffs[id] = Math.max(0, p.buffs[id] - dt);
+  if (p.buffs.shield <= 0) p.shield = 0;
 }
 
 function pickTwist(n, isBoss) {
@@ -306,7 +347,7 @@ function setupArena(n, isBoss) {
   else if (n >= 2 && (twist === 'snipers' || Math.random() > 0.15)) lay = pick(Object.keys(LAYOUTS).filter(k => k !== lastLayout));
   lastLayout = lay;
   if (lay) pillars = LAYOUTS[lay].map(c => ({ ...c, rise: 0 }));
-  if (player) pushOutOfPillars(player, player.r);
+  for (const p of players) pushOutOfPillars(p, p.r);
   if (twist === 'mines') placeMines(8 + Math.min(6, n >> 1));
 }
 
@@ -324,6 +365,7 @@ function buildWave(n) {
   if (twist === 'swarm') { count = Math.round(count * 1.6); pool = [['runner', 8], ['grunt', 2]]; }
   else if (twist === 'snipers') { count = Math.round(count * 0.8); pool = [['shooter', 5], ['grunt', 3], ['runner', 2]]; }
   else if (twist === 'heavy') { count = Math.max(6, Math.round(count * 0.4)); pool = [['tank', 4], ['splitter', 4], ['grunt', 1]]; }
+  count = Math.round(count * crowd);   // bigger waves with friends
   for (let i = 0; i < count; i++) q.push(weighted(pool));
   if (n === 3) q.splice(q.length >> 1, 0, 'tank');   // first taste of a big guy
   if (isBoss) q.unshift('boss');
@@ -335,10 +377,10 @@ function showBanner(title, sub, note = '', color = '#fff') { banner = { title, s
 // ---------------------------------------------------------------- entities
 function makeEnemy(type, x, y) {
   const d = ETYPES[type];
-  const hpMul = 1 + (round - 1) * 0.1;
+  const hpMul = (1 + (round - 1) * 0.1) * (1 + 0.15 * (nPlayers - 1));
   const spMul = Math.min(1.6, 1 + (round - 1) * 0.03) * (twist === 'overdrive' ? 1.3 : 1);
   const e = {
-    type, x, y, r: d.r * SPR, color: d.color, score: d.score, cr: d.cr,
+    id: nextEid++, type, x, y, r: d.r * SPR, color: d.color, score: d.score, cr: d.cr,
     hp: Math.ceil(d.hp * hpMul), maxHp: 0,
     speed: d.speed * spMul * rand(0.9, 1.1),
     kx: 0, ky: 0, hitT: 0, bladeCD: 0, t: rand(0, 10), wob: rand(0, Math.PI * 2),
@@ -347,7 +389,7 @@ function makeEnemy(type, x, y) {
   if (type === 'boss') {
     const bd = bossDef();
     e.kind = bd.id; e.color = bd.color;
-    e.hp = Math.round(260 + round * 45);
+    e.hp = Math.round((260 + round * 45) * (1 + 0.8 * (nPlayers - 1)));   // much tougher with friends
     e.speed = d.speed;
     e.burstT = 2.5; e.spawnT = 4; e.fireT = 1.5;
     e.mode = 'walk'; e.modeT = 2.5; e.spin = 0; e.ring2T = 0; e.cdx = 0; e.cdy = 1; e.px = x; e.py = y;
@@ -372,6 +414,7 @@ function fireEnemyBullet(x, y, dx, dy, speed, color) {
 }
 
 function burst(x, y, color, n, spd, size = 4) {
+  if (netOut) netOut.push(['b', Math.round(x), Math.round(y), color, n, spd, size]);
   for (let i = 0; i < n; i++) {
     const a = rand(0, Math.PI * 2), s = rand(0.2, 1) * spd;
     particles.push({ x, y, vx: Math.cos(a) * s, vy: Math.sin(a) * s, life: rand(0.3, 0.8), max: 0.8, color, size: rand(size * 0.5, size * 1.4) });
@@ -380,7 +423,22 @@ function burst(x, y, color, n, spd, size = 4) {
 }
 
 function addText(x, y, text, color = '#fff', size = 14, life = 0.8) {
+  if (netOut) netOut.push(['t', Math.round(x), Math.round(y), text, color, size, life]);
   texts.push({ x, y, text, color, size, life, max: life });
+}
+
+// Shake, flash and buzz either everyone (p = null) or just one player's phone.
+function addShake(n, p = null) {
+  if (!p || p === me) shake = Math.max(shake, n);
+  if (netOut && p !== me) netOut.push(['k', n, p ? p.pid : -1]);
+}
+function addFlash(a, color, p = null) {
+  if (!p || p === me) { flash = a; flashColor = color; }
+  if (netOut && p !== me) netOut.push(['f', a, color, p ? p.pid : -1]);
+}
+function buzz(ms, p = null) {
+  if (!p || p === me) vibrate(ms);
+  if (netOut && p !== me) netOut.push(['v', ms, p ? p.pid : -1]);
 }
 
 const comboMult = () => 1 + Math.min(4, Math.floor(combo / 10));
@@ -403,12 +461,13 @@ function killEnemy(e) {
   combo++; comboT = 2;
   const pts = e.score * comboMult();
   score += pts;
-  credits += e.cr * (twist === 'cash' ? 2 : 1) * (buffs.gems > 0 ? 2 : 1);
+  // everyone gets paid for every kill; bigger waves pay less each, so it evens out with solo
+  for (const p of players) p.credits += e.cr * (twist === 'cash' ? 2 : 1) * (p.buffs.gems > 0 ? 2 : 1) / crowd;
   if (e.type === 'boss') {
     burst(e.x, e.y, e.color, 90, 450, 7);
     burst(e.x, e.y, '#fff', 40, 300, 5);
-    shake = Math.max(shake, 28); flash = 0.7; flashColor = '255,255,255';
-    Sound.boom(true); vibrate(200);
+    addShake(28); addFlash(0.7, '255,255,255');
+    Sound.boom(true); buzz(200);
     for (let i = 0; i < 6; i++) dropPickup(e.x + rand(-60, 60), e.y + rand(-60, 60), true);
     addText(e.x, e.y - 60, '+' + pts, '#ffd43b', 28, 1.6);
     boss = null;
@@ -417,9 +476,9 @@ function killEnemy(e) {
   } else {
     burst(e.x, e.y, e.color, e.r > 18 ? 22 : 12, 220);
     Sound.boom(false);
-    shake = Math.max(shake, e.r > 18 ? 6 : 2);
+    addShake(e.r > 18 ? 6 : 2);
     addText(e.x, e.y - e.r, '+' + pts, comboMult() > 1 ? '#ffd43b' : '#fff', 12, 0.6);
-    if (Math.random() < 0.055 * (1 + 0.5 * lvl('magnet'))) dropPickup(e.x, e.y);
+    if (Math.random() < 0.055 * (1 + 0.5 * Math.max(...players.map(p => L(p, 'magnet'))))) dropPickup(e.x, e.y);
     else if (twist === 'cash' && e.cr && Math.random() < 0.2) dropPickup(e.x, e.y, false, 'coin');
   }
   if (e.type === 'splitter') {
@@ -434,97 +493,115 @@ function killEnemy(e) {
 
 function dropPickup(x, y, rich = false, type = null) {
   const pool = [['rapid', 1.5], ['spread', 1.5], ['laser', 1], ['charge', 2], ['coin', rich ? 7 : 5]];
-  if (player.hp < player.maxHp) pool.push(['heart', rich ? 4 : 2]);
+  if (alive().some(p => p.hp < p.maxHp)) pool.push(['heart', rich ? 4 : 2]);
   const pk = { type: type || weighted(pool), x: clamp(x, WALL + 20, W - WALL - 20), y: clamp(y, WALL + 20, H - WALL - 20), life: 9, t: 0 };
   pushOutOfPillars(pk, 16);
   pickups.push(pk);
 }
 
-function collect(p) {
-  const def = PICKUPS[p.type];
+function collect(pk, p) {
+  const def = PICKUPS[pk.type];
   Sound.pickup();
   let label = def.name;
-  switch (p.type) {
-    case 'heart': player.hp = Math.min(player.maxHp, player.hp + 1); break;
+  switch (pk.type) {
+    case 'heart': p.hp = Math.min(p.maxHp, p.hp + 1); break;
     case 'rapid': case 'spread': case 'laser':
-      player.weapon = p.type; player.weaponT = player.weaponMax = 10 + 4 * lvl('surge'); break;
-    case 'coin': credits += 10; break;
+      p.weapon = pk.type; p.weaponT = p.weaponMax = 10 + 4 * L(p, 'surge'); break;
+    case 'coin': p.credits += 10; break;
     case 'charge': {
       const i = randi(0, ABILITIES.length - 1);
-      charges[i]++;
+      p.charges[i]++;
       label = '+1 ' + ABILITIES[i].name;
       break;
     }
   }
-  addText(p.x, p.y - 16, label, def.color, 15, 1.1);
+  addText(pk.x, pk.y - 16, label, def.color, 15, 1.1);
 }
 
-function hurtPlayer() {
-  if (player.inv > 0 || state !== 'play') return;
-  if (player.shield > 0) {   // force field soaks the hit
-    player.shield--; player.inv = 1;
-    burst(player.x, player.y, '#5fe1ff', 18, 220);
-    addText(player.x, player.y - 34, player.shield ? 'SHIELD!' : 'SHIELD DOWN', '#5fe1ff', 15, 0.9);
-    Sound.hit(); vibrate(40);
+function hurtPlayer(p) {
+  if (!p || p.down || p.inv > 0 || state !== 'play') return;
+  if (p.shield > 0) {   // force field soaks the hit
+    p.shield--; p.inv = 1;
+    burst(p.x, p.y, '#5fe1ff', 18, 220);
+    addText(p.x, p.y - 34, p.shield ? 'SHIELD!' : 'SHIELD DOWN', '#5fe1ff', 15, 0.9);
+    Sound.hit(); buzz(40, p);
     return;
   }
-  player.hp--;
-  player.inv = 1.6;
-  flawless = false;
-  shake = Math.max(shake, 14); flash = 0.35; flashColor = '255,40,60';
+  p.hp--;
+  p.inv = 1.6;
+  p.flawless = false;
+  addShake(14, p); addFlash(0.35, '255,40,60', p);
   combo = 0;
-  Sound.hurt(); vibrate(90);
-  burst(player.x, player.y, '#3a8dff', 16, 200);
+  Sound.hurt(); buzz(90, p);
+  burst(p.x, p.y, PCOL[p.pid].pad, 16, 200);
   for (const e of enemies) {
     if (e.type === 'boss') continue;
-    const dx = e.x - player.x, dy = e.y - player.y, dd = Math.hypot(dx, dy) || 1;
+    const dx = e.x - p.x, dy = e.y - p.y, dd = Math.hypot(dx, dy) || 1;
     if (dd < 140) { e.kx += dx / dd * 420; e.ky += dy / dd * 420; }
   }
-  if (player.hp <= 0) gameOver();
+  if (p.hp <= 0) downPlayer(p);
+}
+
+// Out of hearts. Solo that's game over; with friends you sit out until the next round.
+function downPlayer(p) {
+  p.down = true; p.hp = 0; p.blades = 0; p.weapon = 'basic'; p.weaponT = 0; p.shield = 0;
+  p.buffs = { shield: 0, drone: 0, gems: 0 };
+  burst(p.x, p.y, PCOL[p.pid].pad, 40, 300, 6);
+  if (players.every(o => o.down)) { gameOver(); return; }
+  Sound.boom(true);
+  addText(p.x, p.y - 30, `${pname(p)} IS DOWN!`, '#ff4466', 16, 1.6);
+  addText(p.x, p.y - 10, 'back next round', '#ffffff', 12, 1.6);
 }
 
 function gameOver() {
   state = 'over'; overT = 0;
-  burst(player.x, player.y, '#3a8dff', 60, 350, 6);
-  burst(player.x, player.y, '#ffd3a0', 30, 250, 5);
+  for (const p of players) {
+    burst(p.x, p.y, PCOL[p.pid].pad, 60, 350, 6);
+    burst(p.x, p.y, '#ffd3a0', 30, 250, 5);
+  }
   Sound.boom(true);
   Sound.jingle([392, 330, 262, 196], 180);
-  vibrate([100, 60, 200]);
+  buzz([100, 60, 200]);
   if (score > best) { best = score; newBest = true; store.set('arena_best', best); }
   sticks.left = sticks.right = null;
 }
 
 // ---------------------------------------------------------------- abilities
-function useAbility(i) {
-  if (state !== 'play' || paused) return;
-  if (charges[i] <= 0) { Sound.denied(); return; }
-  charges[i]--;
-  btnPress[i] = 0.15;
+function useAbility(i, p = me) {
+  if (state !== 'play' || paused || !p || p.down) return;
+  if (net.role === 'guest') {   // the host fires it; we just ask
+    if (me.charges[i] > 0) { netSend(['a', i]); me.charges[i]--; btnPress[i] = 0.15; } else Sound.denied();
+    return;
+  }
+  if (p.charges[i] <= 0) { if (p === me) Sound.denied(); return; }
+  p.charges[i]--;
+  if (p === me) btnPress[i] = 0.15;
   const id = ABILITIES[i].id;
   if (id === 'blast') {
-    effects.push({ x: player.x, y: player.y, r: 10, max: 480, hit: new Set() });
-    shake = Math.max(shake, 22); flash = 0.4; flashColor = '255,140,60';
-    Sound.boom(true); Sound.power(); vibrate(120);
-    addText(player.x, player.y - 30, 'BLAST!', '#ff5533', 22, 1);
+    effects.push({ x: p.x, y: p.y, r: 10, max: 480, hit: new Set() });
+    addShake(22); addFlash(0.4, '255,140,60');
+    Sound.boom(true); Sound.power(); buzz(120, p);
+    addText(p.x, p.y - 30, 'BLAST!', '#ff5533', 22, 1);
   } else if (id === 'missiles') {
-    const base = Math.atan2(player.ay, player.ax);
-    const n = 14 + 6 * lvl('missiles');
+    const base = Math.atan2(p.ay, p.ax);
+    const n = 14 + 6 * L(p, 'missiles');
     for (let k = 0; k < n; k++) {
       const a = base + (k / (n - 1) - 0.5) * Math.PI * 1.7;
-      missiles.push({ x: player.x, y: player.y, a, speed: 220, target: null, life: 3.5 });
+      missiles.push({ x: p.x, y: p.y, a, speed: 220, target: null, life: 3.5 });
     }
-    Sound.power(); vibrate(60);
-    addText(player.x, player.y - 30, 'MISSILES!', '#33ccff', 22, 1);
+    Sound.power(); buzz(60, p);
+    addText(p.x, p.y - 30, 'MISSILES!', '#33ccff', 22, 1);
   } else if (id === 'blades') {
-    player.blades = 8 + 2 * lvl('blades');
-    Sound.power(); vibrate(60);
-    addText(player.x, player.y - 30, 'BLADES!', '#cc66ff', 22, 1);
+    p.blades = 8 + 2 * L(p, 'blades');
+    Sound.power(); buzz(60, p);
+    addText(p.x, p.y - 30, 'BLADES!', '#cc66ff', 22, 1);
   }
 }
 
 // ---------------------------------------------------------------- upgrade shop
 function openShop() {
   state = 'shop';
+  for (const p of players) p.ready = false;
   shopMsg = null;
   sticks.left = sticks.right = null;
   bullets.length = 0; missiles.length = 0;
@@ -538,7 +615,7 @@ function layoutShop() {
     : [...GEAR.map(g => ({ kind: 'gear', g })), { kind: 'heal' }, { kind: 'go' }];
   const aw = sw - safe.l - safe.r, pad = 10, gap = 8;
   const tw = Math.min(200, (aw - pad * 2 - gap) / 2), tx = safe.l + aw / 2 - tw - gap / 2;
-  shopTabs = [{ id: 'up', label: 'UPGRADES', sub: 'keep forever' }, { id: 'gear', label: 'GEAR', sub: `next round · ${10 + 4 * lvl('surge')}s each` }]
+  shopTabs = [{ id: 'up', label: 'UPGRADES', sub: 'keep forever' }, { id: 'gear', label: 'GEAR', sub: '' }]
     .map((t, i) => ({ ...t, x: tx + i * (tw + gap), y: safe.t + 58, w: tw, h: 30 }));
   const top = safe.t + 96;
   let cols = 3;
@@ -560,48 +637,87 @@ function shopSay(text, color = '#ff6b6b') { shopMsg = { text, color, t: 1.6 }; }
 
 function setShopTab(t) {
   if (t === shopTab) return;
-  shopTab = t; layoutShop(); Sound.tone(660, 0.05, 'square', 0.03);
+  shopTab = t; layoutShop(); localSound(() => Sound.tone(660, 0.05, 'square', 0.03));
 }
 
+// Tapping a shop card. A friend's purchase goes to the host, which answers with the result.
 function buy(c) {
-  if (c.kind === 'go') { state = 'play'; startRound(round + 1); return; }
-  if (c.kind === 'gear') {
-    const g = c.g;
-    if (gear.has(g.id)) { shopSay('Already bought'); Sound.denied(); return; }
-    if (g.gun && GEAR.some(o => o.gun && gear.has(o.id))) { shopSay('You can only carry one gun'); Sound.denied(); return; }
-    if (credits < gearCost(g)) { shopSay('Not enough ◆'); Sound.denied(); return; }
-    credits -= gearCost(g);
-    gear.add(g.id);
-    shopSay(g.once ? `${g.name} ready for next round` : `${g.name}: ${buffTime()}s next round`, '#7CFC00');
-  } else if (c.kind === 'heal') {
-    if (player.hp >= player.maxHp) { shopSay('Already at full health'); Sound.denied(); return; }
-    if (credits < healCost()) { shopSay('Not enough ◆'); Sound.denied(); return; }
-    credits -= healCost();
-    player.hp = player.maxHp;
-  } else {
-    const u = c.u;
-    if (lvl(u.id) >= u.max) { shopSay('Already maxed out'); Sound.denied(); return; }
-    if (credits < upgradeCost(u)) { shopSay('Not enough ◆'); Sound.denied(); return; }
-    credits -= upgradeCost(u);
-    levels[u.id] = lvl(u.id) + 1;
-    if (u.id === 'hp') { player.maxHp++; player.hp++; }
-    shopSay(`${u.name} → LEVEL ${lvl(u.id)}`, '#7CFC00');
+  const id = c.u ? c.u.id : c.g ? c.g.id : null;
+  if (net.role === 'guest') {
+    if (c.kind === 'go') me.ready = true;
+    netSend(['buy', c.kind, id]);
+    return;
   }
-  c.flash = 0.35;
-  Sound.pickup();
+  buyResult(buyFor(me, c.kind, id), c);
+}
+
+function buyResult(r, c = null) {
+  if (r.go) return;
+  if (!r.ok) { shopSay(r.text); localSound(() => Sound.denied()); return; }
+  if (r.text) shopSay(r.text, r.color);
+  if (c) c.flash = 0.35;
+  else for (const k of shopCards) if (k.kind === r.kind && (k.u || k.g || {}).id === r.id) k.flash = 0.35;
+  localSound(() => Sound.pickup());
   vibrate(30);
+}
+
+// The actual purchase, run by the host (or in solo) for whichever player bought it.
+function buyFor(p, kind, id) {
+  const no = text => ({ ok: false, text });
+  if (kind === 'go') { p.ready = true; checkAllReady(); return { ok: true, go: true }; }
+  if (kind === 'gear') {
+    const g = GEAR.find(o => o.id === id);
+    if (!g) return no('?');
+    if (p.gear.includes(g.id)) return no('Already bought');
+    if (g.gun && GEAR.some(o => o.gun && p.gear.includes(o.id))) return no('You can only carry one gun');
+    if (p.credits < gearCost(g)) return no('Not enough ◆');
+    p.credits -= gearCost(g);
+    p.gear.push(g.id);
+    return { ok: true, kind, id, color: '#7CFC00', text: g.once ? `${g.name} ready for next round` : `${g.name}: ${buffTime(p)}s next round` };
+  }
+  if (kind === 'heal') {
+    if (p.hp >= p.maxHp) return no('Already at full health');
+    if (p.credits < healCost()) return no('Not enough ◆');
+    p.credits -= healCost();
+    p.hp = p.maxHp;
+    return { ok: true, kind, id };
+  }
+  const u = UPGRADES.find(o => o.id === id);
+  if (!u) return no('?');
+  if (L(p, u.id) >= u.max) return no('Already maxed out');
+  if (p.credits < upgradeCost(u, p)) return no('Not enough ◆');
+  p.credits -= upgradeCost(u, p);
+  p.levels[u.id] = L(p, u.id) + 1;
+  if (u.id === 'hp') { p.maxHp++; p.hp++; }
+  return { ok: true, kind, id, color: '#7CFC00', text: `${u.name} → LEVEL ${L(p, u.id)}` };
+}
+
+// The next round starts once everyone has tapped READY.
+function checkAllReady() {
+  if (state === 'shop' && players.length && players.every(p => p.ready)) { state = 'play'; startRound(round + 1); }
 }
 
 function explode(x, y, radius, dmg) {
   burst(x, y, '#ffb347', 10, 200, 4);
   burst(x, y, '#fff', 4, 120, 3);
   Sound.boom(false);
-  shake = Math.max(shake, 4);
+  addShake(4);
   const rr = radius * radius;
   for (const e of enemies) {
     if (!e.dead && d2(e.x, e.y, x, y) < rr + e.r * e.r) damage(e, dmg, e.x - x, e.y - y, 1.2);
   }
 }
+
+function nearestPlayer(x, y) {
+  let best = null, bd = Infinity;
+  for (const p of players) {
+    if (p.down) continue;
+    const dd = d2(p.x, p.y, x, y);
+    if (dd < bd) { bd = dd; best = p; }
+  }
+  return best;
+}
+const look = e => nearestPlayer(e.x, e.y) || me;   // who an enemy is staring at
 
 function nearestEnemy(x, y) {
   let bestE = null, bd = Infinity;
@@ -631,9 +747,10 @@ const inPillar = (x, y, pad = 0) => pillars.some(c => d2(x, y, c.x, c.y) < (c.r 
 function openSpot(minDist) {
   for (let tries = 0; tries < 200; tries++) {
     const x = rand(WALL + 40, W - WALL - 40), y = rand(WALL + 40, H - WALL - 40);
-    if (d2(x, y, player.x, player.y) > minDist * minDist && !inPillar(x, y, 30)) return { x, y };
+    if (alive().every(p => d2(x, y, p.x, p.y) > minDist * minDist) && !inPillar(x, y, 30)) return { x, y };
   }
-  return { x: W - player.x, y: H - player.y };
+  const p = alive()[0] || players[0];
+  return { x: W - p.x, y: H - p.y };
 }
 
 function placeMines(n) {
@@ -650,7 +767,7 @@ function updateMines(dt) {
   for (const m of mines) {
     m.t += dt;
     if (m.fuse < 0) {
-      let trip = d2(m.x, m.y, player.x, player.y) < (player.r + 12) ** 2;
+      let trip = alive().some(p => d2(m.x, m.y, p.x, p.y) < (p.r + 12) ** 2);
       if (!trip) for (const e of enemies) if (!e.dead && !e.entering && d2(m.x, m.y, e.x, e.y) < (e.r + 10) ** 2) { trip = true; break; }
       if (!trip) for (const b of bullets) if (!b.dead && d2(m.x, m.y, b.x, b.y) < 16 * 16) { trip = true; b.dead = true; break; }
       if (trip) { m.fuse = 0.45; Sound.tone(880, 0.08, 'square', 0.04); }
@@ -658,8 +775,8 @@ function updateMines(dt) {
       m.dead = true;
       explode(m.x, m.y, 80, 10);
       burst(m.x, m.y, '#ff9f1a', 24, 320, 5);
-      shake = Math.max(shake, 10);
-      if (d2(m.x, m.y, player.x, player.y) < 70 * 70) hurtPlayer();
+      addShake(10);
+      for (const p of alive()) if (d2(m.x, m.y, p.x, p.y) < 70 * 70) hurtPlayer(p);
       for (const o of mines) if (!o.dead && o.fuse < 0 && d2(m.x, m.y, o.x, o.y) < 90 * 90) o.fuse = 0.15;   // chain reaction
     }
   }
@@ -732,9 +849,11 @@ function goFullscreen() {
 
 // Returns true when the tap was consumed by UI rather than a stick.
 function handleTap(x, y) {
+  if (uiState !== state) render();   // screen changed since the last frame: make sure its buttons exist
+  for (const b of uiButtons) if (x >= b.x && x <= b.x + b.w && y >= b.y && y <= b.y + b.h) { b.action(); return true; }
   if (state === 'notes') { state = 'title'; return true; }
-  if (state === 'title') { goFullscreen(); newGame(); return true; }
-  if (state === 'over') { if (overT > 1) { if (updateReady) location.reload(); else newGame(); } return true; }
+  if (state === 'title' || state === 'lobby' || state === 'join') return true;
+  if (state === 'over') { if (net.role === 'solo' && overT > 1) { if (updateReady) location.reload(); else newGame(); } return true; }
   if (state === 'shop') {
     for (const t of shopTabs) if (x >= t.x && x <= t.x + t.w && y >= t.y && y <= t.y + t.h) { setShopTab(t.id); return true; }
     for (const c of shopCards) {
@@ -743,8 +862,8 @@ function handleTap(x, y) {
     return true;
   }
   if (hitBtn(muteBtn, x, y)) { Sound.muted = !Sound.muted; store.set('arena_muted', Sound.muted); return true; }
-  if (hitBtn(pauseBtn, x, y)) { paused = !paused; sticks.left = sticks.right = null; return true; }
-  if (paused) { paused = false; return true; }
+  if (hitBtn(pauseBtn, x, y)) { togglePause(); return true; }
+  if (paused) { togglePause(); return true; }
   for (let i = 0; i < abilityBtns.length; i++) {
     if (hitBtn(abilityBtns[i], x, y, 6)) { useAbility(i); return true; }
   }
@@ -798,11 +917,15 @@ window.addEventListener('keydown', e => {
   if (k.startsWith('arrow')) mouse.active = false;
   if (state === 'notes' && (k === 'enter' || k === ' ')) { state = 'title'; return; }
   if (state === 'title' && (k === 'enter' || k === ' ')) { newGame(); return; }
-  if (state === 'over' && (k === 'enter' || k === ' ') && overT > 1) { if (updateReady) location.reload(); else newGame(); return; }
+  if (state === 'lobby' && k === 'enter' && net.role === 'host') { newGame(); return; }
+  if (state === 'over' && (k === 'enter' || k === ' ') && overT > 1 && net.role !== 'guest') {
+    if (updateReady && net.role === 'solo') location.reload(); else newGame();
+    return;
+  }
   if (state === 'shop' && k === 'enter') { buy(shopCards[shopCards.length - 1]); return; }
   if (state === 'shop' && (k === 'tab' || k === 'arrowleft' || k === 'arrowright')) { e.preventDefault(); setShopTab(shopTab === 'up' ? 'gear' : 'up'); return; }
   if (state !== 'play') return;
-  if (k === 'p' || k === 'escape') { paused = !paused; return; }
+  if (k === 'p' || k === 'escape') { togglePause(); return; }
   if (k === 'm') { Sound.muted = !Sound.muted; store.set('arena_muted', Sound.muted); return; }
   if (e.repeat) return;
   ABILITIES.forEach((a, i) => { if (a.keys.includes(k)) useAbility(i); });
@@ -810,15 +933,18 @@ window.addEventListener('keydown', e => {
 });
 window.addEventListener('keyup', e => { keys[e.key.toLowerCase()] = false; });
 document.addEventListener('visibilitychange', () => {
-  if (document.hidden && state === 'play') { paused = true; sticks.left = sticks.right = null; }
+  if (document.hidden && state === 'play' && net.role !== 'guest') {
+    paused = true; sticks.left = sticks.right = null;
+    if (net.role === 'host') hostBroadcast();   // tell friends before this phone goes to sleep
+  }
 });
 
 // ---------------------------------------------------------------- update
 function update(dt) {
   time += dt;
   updateRound(dt);
-  updateBuffs(dt);
-  updatePlayer(dt);
+  moveLocal(me, dt);
+  for (const p of players) { updateBuffs(p, dt); updateGun(p, dt); }
   updateEnemies(dt);
   updateShots(dt);
   updateMines(dt);
@@ -839,7 +965,7 @@ function updateRound(dt) {
     if (phaseT <= 0) { roundPhase = 'fight'; activateGear(); }
   } else if (roundPhase === 'fight') {
     spawnT -= dt;
-    const cap = 30 + round * 3;
+    const cap = (30 + round * 3) * crowd;
     if (spawnQueue.length && spawnT <= 0 && enemies.length < cap) {
       const group = spawnQueue[0] === 'boss' ? 1 : Math.min(spawnQueue.length, randi(2, 3 + Math.floor(round / 3)));
       if (twist === 'ambush' && Math.random() < 0.65) {
@@ -853,20 +979,24 @@ function updateRound(dt) {
         for (let i = 0; i < group; i++) spawnFromDoor(spawnQueue.shift(), door, i);
         door.flash = 0.8;
       }
-      spawnT = Math.max(0.55, 2.0 - round * 0.08);
+      spawnT = Math.max(0.55, 2.0 - round * 0.08) / Math.sqrt(crowd);
     }
     if (!spawnQueue.length && !warps.length && enemies.length === 0) {
       roundPhase = 'clear'; phaseT = 3.2;
       for (const m of mines) burst(m.x, m.y, '#888', 6, 80, 3);   // leftover mines fizzle out
       mines = []; strikes = []; puddles = [];
       const bonus = round * 1000;
-      const crBonus = 8 + round * 2 + (flawless ? 10 : 0);
+      const crBase = 8 + round * 2;
       score += bonus;
-      credits += crBonus;
+      for (const p of players) {
+        p.credits += crBase + (p.flawless && !p.down ? 10 : 0);
+        if (players.length > 1 && p.flawless && !p.down) addText(p.x, p.y - 34, 'FLAWLESS +10 ◆', '#4dfff0', 14, 1.6);
+      }
       ebullets.length = 0;
       const shopNext = round % SHOP_EVERY === 0;
+      const fl = players.length === 1 && me.flawless;
       showBanner(`ROUND ${round} CLEAR!`,
-        `+${crBonus} ◆${flawless ? '  FLAWLESS!' : ''}${shopNext ? '  ·  UPGRADE SHOP OPEN' : ''}`);
+        `+${crBase + (fl ? 10 : 0)} ◆${players.length > 1 ? ' each' : ''}${fl ? '  FLAWLESS!' : ''}${shopNext ? '  ·  UPGRADE SHOP OPEN' : ''}`);
       Sound.jingle([523, 659, 784, 1046]);
     }
   } else if (roundPhase === 'clear') {
@@ -878,9 +1008,9 @@ function updateRound(dt) {
   }
 }
 
-function updatePlayer(dt) {
-  const p = player;
-  // movement
+// Your own movement and aim run on your phone, even as a guest, so the controls feel instant.
+function moveLocal(p, dt) {
+  if (!p) return;
   let mx = 0, my = 0;
   if (keys['w']) my -= 1;
   if (keys['s']) my += 1;
@@ -891,7 +1021,7 @@ function updatePlayer(dt) {
   if (ml > 1) { mx /= ml; my /= ml; }
   p.moving = ml > 0.12;
   if (p.moving) {
-    const spd = 235 * (1 + 0.1 * lvl('speed'));
+    const spd = 235 * (1 + 0.1 * L(p, 'speed'));
     p.x += mx * spd * dt; p.y += my * spd * dt;
     p.walk += dt * 13;
   }
@@ -909,52 +1039,64 @@ function updatePlayer(dt) {
   else if (!ax && !ay && mouse.active) { ax = mouse.x - p.x; ay = mouse.y - p.y; }
   const al = Math.hypot(ax, ay);
   if (al > 0.001) { p.ax = ax / al; p.ay = ay / al; }
+}
 
-  // always shooting
+// Gun, timers and drone. The host runs this for every player.
+function updateGun(p, dt) {
+  if (p.inv > 0) p.inv -= dt;
+  if (p.muzzle > 0) p.muzzle -= dt;
+  if (p.down) return;
   if (p.weaponT > 0) { p.weaponT -= dt; if (p.weaponT <= 0) p.weapon = 'basic'; }
   const w = WEAPONS[twist === 'overdrive' && p.weapon === 'basic' ? 'rapid' : p.weapon];
-  const count = w.count + lvl('multi'), arc = w.arc + lvl('multi') * 0.14;
-  const dmg = w.dmg * dmgMult(), spd = w.speed || 640;
+  const count = w.count + L(p, 'multi'), arc = w.arc + L(p, 'multi') * 0.14;
+  const dmg = w.dmg * dmgMult(p), spd = w.speed || 640;
   p.fireT -= dt;
   while (p.fireT <= 0) {
     const base = Math.atan2(p.ay, p.ax);
     for (let k = 0; k < count; k++) {
       const a = base + (count > 1 ? (k / (count - 1) - 0.5) * arc : 0) + rand(-w.jitter, w.jitter);
-      bullets.push({
+      fireBullet({
         x: p.x + Math.cos(base) * 14, y: p.y - 2 + Math.sin(base) * 14,   // close in, so huggers still get hit
-        vx: Math.cos(a) * spd, vy: Math.sin(a) * spd, r: 7, dmg: rollCrit(dmg), life: 1.2,
-        pierce: lvl('pierce') + (w.pierce || 0), hits: null, color: w.speed ? w.color : null,
+        vx: Math.cos(a) * spd, vy: Math.sin(a) * spd, r: 7, dmg: rollCrit(dmg, p), life: 1.2,
+        pierce: L(p, 'pierce') + (w.pierce || 0), hits: null, color: w.speed ? w.color : null,
       });
     }
-    p.fireT += w.rate / (1 + 0.15 * lvl('rate'));
+    p.fireT += w.rate / (1 + 0.15 * L(p, 'rate'));
     p.muzzle = 0.05;
     Sound.shot();
   }
-  if (p.muzzle > 0) p.muzzle -= dt;
-  if (p.inv > 0) p.inv -= dt;
 
   // buddy drone: circles you and plinks the nearest enemy
-  if (buffs.drone > 0) {
-    drone.a += dt * 2.2;
-    drone.x = p.x + Math.cos(drone.a) * 42; drone.y = p.y + Math.sin(drone.a) * 30 - 10;
-    drone.t -= dt;
-    const t = nearestEnemy(drone.x, drone.y);
-    if (t && drone.t <= 0 && d2(t.x, t.y, drone.x, drone.y) < 460 * 460) {
-      drone.t = 0.3 / (1 + 0.15 * lvl('rate'));
-      const a = Math.atan2(t.y - drone.y, t.x - drone.x);
-      bullets.push({ x: drone.x, y: drone.y, vx: Math.cos(a) * 700, vy: Math.sin(a) * 700, r: 6,
-        dmg: rollCrit(dmgMult()), life: 1, pierce: 0, hits: null, color: '#7CFC00' });
+  const dr = p.drone;
+  dr.a += dt * 2.2;
+  if (p.buffs.drone > 0) {
+    dronePos(p);
+    dr.t -= dt;
+    const t = nearestEnemy(dr.x, dr.y);
+    if (t && dr.t <= 0 && d2(t.x, t.y, dr.x, dr.y) < 460 * 460) {
+      dr.t = 0.3 / (1 + 0.15 * L(p, 'rate'));
+      const a = Math.atan2(t.y - dr.y, t.x - dr.x);
+      fireBullet({ x: dr.x, y: dr.y, vx: Math.cos(a) * 700, vy: Math.sin(a) * 700, r: 6,
+        dmg: rollCrit(dmgMult(p), p), life: 1, pierce: 0, hits: null, color: '#7CFC00' });
     }
   }
 }
+function dronePos(p) { p.drone.x = p.x + Math.cos(p.drone.a) * 42; p.drone.y = p.y + Math.sin(p.drone.a) * 30 - 10; }
 
-const dmgMult = () => (1 + 0.25 * lvl('damage')) * (1 + 0.1 * lvl('over'));
-const rollCrit = d => Math.random() < 0.08 * lvl('crit') ? d * 3 : d;
+// Friends' phones get a copy of every shot and animate it themselves.
+function fireBullet(b) {
+  bullets.push(b);
+  if (netOut) netOut.push(['B', Math.round(b.x), Math.round(b.y), Math.round(b.vx), Math.round(b.vy), b.pierce, b.color, b.life, b.r]);
+}
+
+const dmgMult = p => (1 + 0.25 * L(p, 'damage')) * (1 + 0.1 * L(p, 'over'));
+const rollCrit = (d, p) => Math.random() < 0.08 * L(p, 'crit') ? d * 3 : d;
 
 function updateEnemies(dt) {
-  const p = player;
   for (const e of enemies) {
     if (e.dead) continue;
+    const p = nearestPlayer(e.x, e.y) || players[0];   // everyone goes after whoever is closest
+    e.tgt = p;
     e.t += dt;
     if (e.hitT > 0) e.hitT -= dt;
     if (e.bladeCD > 0) e.bladeCD -= dt;
@@ -1009,7 +1151,9 @@ function updateEnemies(dt) {
       e.x += -uy * side * e.speed * dt; e.y += ux * side * e.speed * dt;
     }
 
-    if (d2(e.x, e.y, p.x, p.y) < (e.r / SPR + p.r - 3) ** 2) hurtPlayer();   // touch range uses the un-enlarged size, to stay forgiving
+    for (const q of players) {   // touch range uses the un-enlarged size, to stay forgiving
+      if (!q.down && d2(e.x, e.y, q.x, q.y) < (e.r / SPR + q.r - 3) ** 2) hurtPlayer(q);
+    }
   }
 
   // keep enemies from stacking on top of each other
@@ -1062,7 +1206,7 @@ function queenAI(e, dx, dy, dt) {
   e.burstT -= dt; e.spawnT -= dt; e.fireT -= dt;
   if (e.burstT <= 0) {
     const n = enraged ? 4 : 3;
-    for (let k = 0; k < n; k++) addStrike(player.x + (k ? rand(-110, 110) : 0), player.y + (k ? rand(-90, 90) : 0), 46, 1.1, '#7cfc00', true);
+    for (let k = 0; k < n; k++) addStrike(e.tgt.x + (k ? rand(-110, 110) : 0), e.tgt.y + (k ? rand(-90, 90) : 0), 46, 1.1, '#7cfc00', true);
     e.burstT = enraged ? 1.8 : 2.6;
     Sound.tone(180, 0.3, 'sine', 0.05, 90);
   }
@@ -1111,7 +1255,7 @@ function sentinelAI(e, dx, dy, dt) {
     // stopped short (hit a wall or pillar), or ran out of steam
     if ((e.modeT < 1.5 && moved < e.speed * dt * 0.6) || e.modeT <= 0) {
       e.mode = 'stun'; e.modeT = enraged ? 1.0 : 1.4;
-      shake = Math.max(shake, 16); Sound.boom(true); vibrate(80);
+      addShake(16); Sound.boom(true); buzz(80);
       const n = enraged ? 18 : 12, off = rand(0, 1);
       for (let k = 0; k < n; k++) {
         const a = off + k / n * Math.PI * 2;
@@ -1134,7 +1278,7 @@ function titanAI(e, dx, dy, dt) {
   e.speed = enraged ? 66 : 46;
   e.burstT -= dt; e.spawnT -= dt; e.fireT -= dt;
   if (e.burstT <= 0) {
-    addStrike(player.x, player.y, 58, 1.3, '#ff6a1a');
+    for (const p of alive()) addStrike(p.x, p.y, 58, 1.3, '#ff6a1a');
     for (let k = 0; k < (enraged ? 6 : 4); k++) { const o = openSpot(0); addStrike(o.x, o.y, 58, 1.3, '#ff6a1a'); }
     e.burstT = enraged ? 2.2 : 3.2;
     Sound.tone(90, 0.5, 'sawtooth', 0.05, 40);
@@ -1189,14 +1333,14 @@ function updateBossHazards(dt) {
     st.dead = true;
     burst(st.x, st.y, st.color, 18, 260, 5);
     burst(st.x, st.y, '#fff', 6, 160, 3);
-    Sound.boom(false); shake = Math.max(shake, 6);
-    if (d2(st.x, st.y, player.x, player.y) < (st.r + player.r * 0.5) ** 2) hurtPlayer();
+    Sound.boom(false); addShake(6);
+    for (const p of alive()) if (d2(st.x, st.y, p.x, p.y) < (st.r + p.r * 0.5) ** 2) hurtPlayer(p);
     if (st.puddle) puddles.push({ x: st.x, y: st.y, r: st.r * 0.8, life: 4, max: 4 });
   }
   strikes = strikes.filter(st => !st.dead);
   for (const pd of puddles) {
     pd.life -= dt;
-    if (pd.life > 0.5 && d2(pd.x, pd.y, player.x, player.y) < (pd.r * 0.8) ** 2) hurtPlayer();
+    if (pd.life > 0.5) for (const p of alive()) if (d2(pd.x, pd.y, p.x, p.y) < (pd.r * 0.8) ** 2) hurtPlayer(p);
   }
   puddles = puddles.filter(pd => pd.life > 0);
 }
@@ -1229,12 +1373,14 @@ function updateShots(dt) {
   }
   bullets = bullets.filter(b => !b.dead);
 
-  const p = player;
   for (const b of ebullets) {
     b.x += b.vx * dt; b.y += b.vy * dt; b.life -= dt;
     if (b.life <= 0 || !inArena(b.x, b.y, -4) || inPillar(b.x, b.y)) { b.dead = true; continue; }
-    const rr = b.r + p.r - 4;
-    if (d2(p.x, p.y, b.x, b.y) < rr * rr && p.inv <= 0) { b.dead = true; hurtPlayer(); }
+    for (const p of players) {
+      if (p.down || p.inv > 0) continue;
+      const rr = b.r + p.r - 4;
+      if (d2(p.x, p.y, b.x, b.y) < rr * rr) { b.dead = true; hurtPlayer(p); break; }
+    }
   }
   ebullets = ebullets.filter(b => !b.dead);
 }
@@ -1278,11 +1424,11 @@ function updateAbilities(dt) {
   missiles = missiles.filter(m => !m.dead);
 
   // spinning blades
-  const p = player;
-  if (p.blades > 0) {
+  for (const p of players) {
+    if (!(p.blades > 0)) continue;
     p.blades -= dt;
     p.bladeA += dt * 7;
-    const nb = 4 + lvl('blades');
+    const nb = 4 + L(p, 'blades');
     for (let k = 0; k < nb; k++) {
       const a = p.bladeA + k * Math.PI * 2 / nb;
       const bx = p.x + Math.cos(a) * 64, by = p.y + Math.sin(a) * 64;
@@ -1302,10 +1448,11 @@ function updateAbilities(dt) {
 }
 
 function updatePickups(dt) {
-  const p = player;
-  const magnetR = 110 * lvl('magnet');
   for (const pk of pickups) {
     pk.life -= dt; pk.t += dt;
+    const p = nearestPlayer(pk.x, pk.y);
+    if (!p) continue;
+    const magnetR = 110 * L(p, 'magnet');
     const dx = p.x - pk.x, dy = p.y - pk.y, dd = Math.hypot(dx, dy) || 1;
     if (roundPhase === 'clear') {   // vacuum up leftovers between rounds
       pk.x += dx / dd * 500 * dt; pk.y += dy / dd * 500 * dt;
@@ -1313,7 +1460,7 @@ function updatePickups(dt) {
     } else if (dd < magnetR) {
       pk.x += dx / dd * 380 * dt; pk.y += dy / dd * 380 * dt;
     }
-    if (d2(p.x, p.y, pk.x, pk.y) < (p.r + 16) ** 2) { collect(pk); pk.dead = true; }
+    if (d2(p.x, p.y, pk.x, pk.y) < (p.r + 16) ** 2) { collect(pk, p); pk.dead = true; }
     else if (pk.life <= 0) pk.dead = true;
   }
   pickups = pickups.filter(pk => !pk.dead);
@@ -1441,7 +1588,7 @@ const WH = '#ffffff';
 
 // Masked brute with a spiked club — the basic grunt.
 function drawBrute(e, fl) {
-  const face = player.x < e.x ? -1 : 1;
+  const face = look(e).x < e.x ? -1 : 1;
   const step = e.entering ? 0 : Math.sin(e.t * 11);
   shadow(e.x, e.y + 13, 12, 4.5);
   ctx.save(); ctx.translate(e.x, e.y); ctx.scale(face, 1);
@@ -1527,7 +1674,7 @@ function drawDrone(e, fl) {
   ctx.strokeStyle = fl ? WH : 'rgba(170,245,255,0.85)'; ctx.lineWidth = 2;
   ctx.beginPath(); ctx.ellipse(0, 1, 16, 4, Math.sin(e.t * 2) * 0.25, 0, Math.PI * 2); ctx.stroke();
   if (!fl) {
-    const a = Math.atan2(player.y - e.y, player.x - e.x), ex = Math.cos(a) * 4, ey = Math.sin(a) * 3;
+    const a = Math.atan2(look(e).y - e.y, look(e).x - e.x), ex = Math.cos(a) * 4, ey = Math.sin(a) * 3;
     const charging = e.fireT < 0.5;
     circle(ex, ey, 5.5, '#08161b');
     if (charging) circle(ex, ey, 8, 'rgba(255,50,80,0.35)');
@@ -1558,7 +1705,7 @@ function drawSlime(e, fl) {
     circle(-7, 5 - (e.t * 6 % 6), 1.8, 'rgba(255,255,255,0.35)');
     circle(8, 2 - (e.t * 4 % 5), 1.3, 'rgba(255,255,255,0.3)');
     oval(-6, -8, 4.5, 2.5, -0.5, 'rgba(255,255,255,0.6)');
-    const a = Math.atan2(player.y - e.y, player.x - e.x), lx = Math.cos(a) * 1.4, ly = Math.sin(a) * 1.4;
+    const a = Math.atan2(look(e).y - e.y, look(e).x - e.x), lx = Math.cos(a) * 1.4, ly = Math.sin(a) * 1.4;
     for (const s of [-1, 1]) {
       circle(s * 4.5, -2, 3.4, '#fff');
       circle(s * 4.5 + lx, -2 + ly, 1.8, '#111');
@@ -1591,7 +1738,7 @@ function drawJuggernaut(e, fl) {
     for (const [rx, ry] of [[-14, -9], [-14, 9], [5, -9], [5, 9]]) circle(rx, ry, 1.3, '#e0ccff');
   }
   ctx.restore();
-  ctx.save(); ctx.translate(e.x, e.y); ctx.rotate(Math.atan2(player.y - e.y, player.x - e.x));
+  ctx.save(); ctx.translate(e.x, e.y); ctx.rotate(Math.atan2(look(e).y - e.y, look(e).x - e.x));
   ctx.fillStyle = fl ? WH : '#3a2060'; rrect(4, -3, 22, 6, 2); ctx.fill();
   ctx.fillStyle = fl ? WH : '#241040'; ctx.fillRect(24, -4.5, 5, 9);
   circle(0, 0, 10, fl ? WH : rgrad('tankTur', -3, -3, 12, [[0, '#ecdcff'], [1, '#6a35b0']]));
@@ -1612,7 +1759,7 @@ function drawOverlord(e, fl) {
     ctx.beginPath(); ctx.moveTo(40, -8); ctx.lineTo(63, 0); ctx.lineTo(40, 8); ctx.closePath(); ctx.fill();
   }
   ctx.restore();
-  const a = Math.atan2(player.y - e.y, player.x - e.x);
+  const a = Math.atan2(look(e).y - e.y, look(e).x - e.x);
   for (const s of [-1, 1]) {
     ctx.save(); ctx.rotate(a + s * 0.55);
     ctx.fillStyle = fl ? WH : '#3b3f4a'; rrect(28, -9, 32, 18, 4); ctx.fill();
@@ -1665,7 +1812,7 @@ function drawQueen(e, fl) {
     }
     for (const sx of [-15, 15]) {
       circle(sx, -6, 9, '#fff');
-      const a = Math.atan2(player.y - e.y, player.x - e.x);
+      const a = Math.atan2(look(e).y - e.y, look(e).x - e.x);
       circle(sx + Math.cos(a) * 4, -6 + Math.sin(a) * 4, 4.5, enraged ? '#c00' : '#10300f');
     }
     ctx.strokeStyle = '#10300f'; ctx.lineWidth = 3;
@@ -1702,7 +1849,7 @@ function drawSentinel(e, fl) {
     ctx.strokeStyle = 'rgba(255,255,255,0.35)'; ctx.lineWidth = 2;
     ctx.beginPath(); ctx.moveTo(-28, -18); ctx.lineTo(-10, -32); ctx.moveTo(14, 26); ctx.lineTo(30, 10); ctx.stroke();
     circle(0, 0, 18, '#0b1e33');
-    const a = Math.atan2(player.y - e.y, player.x - e.x);
+    const a = Math.atan2(look(e).y - e.y, look(e).x - e.x);
     const eye = stunned ? '#7a8a99' : aiming || e.mode === 'charge' ? '#ff3b3b' : '#5fe1ff';
     circle(Math.cos(a) * 6, Math.sin(a) * 6, 11, eye);
     circle(Math.cos(a) * 6 - 3, Math.sin(a) * 6 - 3, 3, '#fff');
@@ -1776,7 +1923,7 @@ function drawEnemy(e) {
 }
 
 // The hero: armored arena commando with a visor helmet and a rifle that follows your aim.
-function drawPlayerGun(a) {
+function drawPlayerGun(a, p) {
   ctx.save(); ctx.translate(0, -2); ctx.rotate(a);
   if (Math.cos(a) < 0) ctx.scale(1, -1);   // keep the gun right side up when aiming left
   ctx.fillStyle = '#1f5fbf'; rrect(0, -3, 9, 6, 3); ctx.fill();
@@ -1786,7 +1933,7 @@ function drawPlayerGun(a) {
   ctx.fillStyle = '#2a2d33'; ctx.fillRect(11, 3, 4, 4);
   circle(8, 0.5, 3, '#222');
   ctx.fillStyle = '#33e0ff'; ctx.fillRect(15, -1, 4, 1.5);
-  if (player.muzzle > 0) {
+  if (p.muzzle > 0) {
     ctx.fillStyle = 'rgba(255,240,150,0.95)';
     ctx.beginPath();
     for (let k = 0; k < 8; k++) {
@@ -1798,10 +1945,11 @@ function drawPlayerGun(a) {
   ctx.restore();
 }
 
-function drawPlayer() {
-  const p = player;
+function drawPlayer(p) {
   if (state === 'over') return;
-  const blink = p.inv > 0 && Math.floor(time * 18) % 2 === 0;
+  const col = PCOL[p.pid];
+  const blink = !p.down && p.inv > 0 && Math.floor(time * 18) % 2 === 0;
+  if (p.down) ctx.globalAlpha = 0.3;   // downed: a see-through ghost until next round
   const a = Math.atan2(p.ay, p.ax);
   const face = p.ax < 0 ? -1 : 1;
   ctx.save(); ctx.translate(p.x, p.y); ctx.scale(SPR, SPR); ctx.translate(-p.x, -p.y);
@@ -1821,15 +1969,15 @@ function drawPlayer() {
     // backpack
     ctx.fillStyle = '#3d4a5e'; rrect(-face * 9 - 4, -8, 8, 12, 2); ctx.fill();
     ctx.fillStyle = '#ffcc33'; ctx.fillRect(-face * 9 - 1, -6, 2, 2);
-    if (gunBehind) drawPlayerGun(a);
+    if (gunBehind) drawPlayerGun(a, p);
     // torso
-    ctx.fillStyle = lgrad('pTorso', 0, -9, 0, 7, [[0, '#6bb4ff'], [1, '#1a52a8']]);
+    ctx.fillStyle = lgrad('pTorso' + p.pid, 0, -9, 0, 7, [[0, col.main], [1, col.dark]]);
     rrect(-9, -9, 18, 15, 5); ctx.fill();
-    outline('#0c2a5a', 1.5);
+    outline(col.edge, 1.5);
     ctx.fillStyle = 'rgba(255,255,255,0.22)'; rrect(-6, -7, 12, 6, 3); ctx.fill();
     ctx.fillStyle = '#2b2b2b'; ctx.fillRect(-9, 3, 18, 3);
     ctx.fillStyle = '#ffd43b'; ctx.fillRect(-2, 3, 4, 3);
-    circle(-8, -6, 3.5, '#2f74d0'); circle(8, -6, 3.5, '#2f74d0');
+    circle(-8, -6, 3.5, col.pad); circle(8, -6, 3.5, col.pad);
     // helmet + visor
     circle(0, -14, 7.5, rgrad('pHelm', -2, -17, 10, [[0, '#c8d6e8'], [1, '#3b4a5e']]));
     outline('#1c2533', 1.2);
@@ -1837,13 +1985,17 @@ function drawPlayer() {
     ctx.fillStyle = '#33e0ff'; rrect(face > 0 ? -1 : -7, -16, 8, 4, 2); ctx.fill();
     ctx.fillStyle = '#fff'; ctx.fillRect(face > 0 ? 4 : -5, -15.5, 2, 1.2);
     ctx.fillStyle = '#ff3344'; ctx.fillRect(-1, -22, 2, 4);
-    if (!gunBehind) drawPlayerGun(a);
+    if (!gunBehind) drawPlayerGun(a, p);
     ctx.restore();
   }
   ctx.restore();
+  ctx.globalAlpha = 1;
+  if (players.length > 1 && p !== me) {   // name tag over friends
+    label(p.down ? pname(p) + ' DOWN' : pname(p), p.x, p.y - 38, 11, col.tag, 'center');
+  }
   if (p.blades > 0) {
     const fade = p.blades < 1.5 && Math.floor(time * 12) % 2 === 0;
-    const nb = 4 + lvl('blades');
+    const nb = 4 + L(p, 'blades');
     if (!fade) for (let k = 0; k < nb; k++) {
       const ba = p.bladeA + k * Math.PI * 2 / nb;
       const bx = p.x + Math.cos(ba) * 64, by = p.y + Math.sin(ba) * 64;
@@ -1861,19 +2013,20 @@ function drawPlayer() {
   }
 }
 
-function drawGearFx() {
-  const p = player;
-  if (state === 'over') return;
+function drawGearFx(p) {
+  if (state === 'over' || p.down) return;
   if (p.shield > 0) {
     ctx.strokeStyle = `rgba(95,225,255,${0.45 + 0.2 * Math.sin(time * 6)})`; ctx.lineWidth = p.shield > 1 ? 3 : 1.5;
     ctx.beginPath(); ctx.arc(p.x, p.y - 4, 28, 0, Math.PI * 2); ctx.stroke();
   }
-  if (buffs.drone > 0 && drone.x !== undefined && (buffs.drone > 1.5 || Math.floor(time * 10) % 2)) {
-    shadow(drone.x, drone.y + 22, 7, 3);
-    circle(drone.x, drone.y, 9, '#4caf50');
-    circle(drone.x - 2.5, drone.y - 2.5, 3, 'rgba(255,255,255,0.45)');
-    circle(drone.x, drone.y + 1, 3.5, '#111');
-    circle(drone.x + 1, drone.y, 1.3, '#7CFC00');
+  const dr = p.drone;
+  if (p.buffs.drone > 0 && (p.buffs.drone > 1.5 || Math.floor(time * 10) % 2)) {
+    dronePos(p);
+    shadow(dr.x, dr.y + 22, 7, 3);
+    circle(dr.x, dr.y, 9, '#4caf50');
+    circle(dr.x - 2.5, dr.y - 2.5, 3, 'rgba(255,255,255,0.45)');
+    circle(dr.x, dr.y + 1, 3.5, '#111');
+    circle(dr.x + 1, dr.y, 1.3, '#7CFC00');
   }
 }
 
@@ -1965,7 +2118,7 @@ function drawHazards() {
 
 // LIGHTS OUT: dark everywhere except around you. Enemy eyes and bullets still glow so it stays fair.
 function drawDarkness() {
-  const p = player;
+  const p = me;
   const g = ctx.createRadialGradient(p.x, p.y, 70, p.x, p.y, 220);
   g.addColorStop(0, 'rgba(4,3,10,0)'); g.addColorStop(1, 'rgba(4,3,10,0.92)');
   ctx.fillStyle = g; ctx.fillRect(-60, -60, W + 120, H + 120);
@@ -1980,7 +2133,8 @@ function drawDarkness() {
 let peekA = 0;
 function drawPeek() {
   if (!isTouch || state !== 'play' || paused) { peekA = 0; return; }
-  const px = offX + player.x * scale, py = offY + player.y * scale;
+  if (!me) return;
+  const px = offX + me.x * scale, py = offY + me.y * scale;
   const covered = [sticks.left, sticks.right].some(s => s && d2(s.x, s.y, px, py) < 120 * 120);
   peekA = clamp(peekA + (covered ? 0.2 : -0.1), 0, 1);
   if (peekA <= 0) return;
@@ -2058,12 +2212,12 @@ function drawHeart(x, y, s, filled) {
 }
 
 function drawHud() {
-  const p = player;
+  const p = me;
   const left = safe.l + 14, top = safe.t;
   label(`SCORE ${score.toLocaleString()}`, left, top + 22, 18);
   for (let i = 0; i < p.maxHp; i++) drawHeart(left + 9 + i * 22, top + 38, 18, i < p.hp);
   drawGem(left + 7, top + 70, 7);
-  label(`${credits}`, left + 19, top + 70, 15, '#4dfff0');
+  label(`${Math.floor(p.credits)}`, left + 19, top + 70, 15, '#4dfff0');
   let y = top + 92;
   if (combo >= 5) { label(`x${comboMult()} COMBO ${combo}`, left, y, 14, '#ffd43b'); y += 20; }
   if (p.weapon !== 'basic') {
@@ -2076,18 +2230,29 @@ function drawHud() {
     y += 20;
   }
   for (const g of GEAR) {   // bought buffs still running, each with its timer
-    const t = buffs[g.id];
+    const t = p.buffs[g.id];
     if (!(t > 0)) continue;
     ctx.font = '13px system-ui, sans-serif'; ctx.textAlign = 'left'; ctx.textBaseline = 'middle'; ctx.fillStyle = '#fff';
     ctx.fillText(g.icon, left, y);
     ctx.fillStyle = 'rgba(255,255,255,0.2)'; ctx.fillRect(left + 22, y - 3, 60, 6);
-    ctx.fillStyle = '#7CFC00'; ctx.fillRect(left + 22, y - 3, 60 * t / buffMax, 6);
+    ctx.fillStyle = '#7CFC00'; ctx.fillRect(left + 22, y - 3, 60 * t / p.buffMax, 6);
     y += 18;
+  }
+  if (p.down) label(p.joining ? 'JOINING · in from the next round' : 'YOU\'RE DOWN · back next round', left, y + 4, 13, p.joining ? '#7CFC00' : '#ff6b6b');
+
+  if (players.length > 1) {   // friends' hearts, top right of the arena
+    const rx = offX + W * scale - 12;
+    let fy = top + 22;
+    for (const o of players) {
+      if (o === me) continue;
+      label(o.down ? `${pname(o)} DOWN` : `${pname(o)} ${'♥'.repeat(Math.max(0, o.hp))}`, rx, fy, 12, o.down ? '#888' : PCOL[o.pid].tag, 'right');
+      fy += 17;
+    }
   }
 
   const mid = offX + W * scale / 2;
   label(`ROUND ${round}`, mid, top + 20, 18, '#fff', 'center');
-  const left2 = spawnQueue.length + warps.length + enemies.length;
+  const left2 = net.role === 'guest' ? enemiesLeft : spawnQueue.length + warps.length + enemies.length;
   if (roundPhase !== 'clear') label(`${left2} enemies left`, mid, top + 40, 12, 'rgba(255,255,255,0.7)', 'center', 'normal');
   if (twist && roundPhase !== 'clear') label(TWISTS[twist].name, mid, top + 58, 12, TWISTS[twist].color, 'center');
 
@@ -2107,7 +2272,7 @@ function drawHud() {
   // ability buttons
   ABILITIES.forEach((a, i) => {
     const b = abilityBtns[i];
-    const ready = charges[i] > 0;
+    const ready = p.charges[i] > 0 && !p.down;
     const pr = btnPress[i] > 0 ? 0.88 : 1;
     ctx.globalAlpha = ready ? 0.95 : 0.35;
     circle(b.x, b.y, b.r * pr, 'rgba(0,0,0,0.5)');
@@ -2119,7 +2284,7 @@ function drawHud() {
     label(a.name, b.x, b.y + b.r * 0.5, isTouch ? 10 : 9, '#fff', 'center');
     circle(b.x + b.r * 0.72, b.y - b.r * 0.72, 10, ready ? '#fff' : '#555');
     ctx.fillStyle = '#111'; ctx.font = 'bold 12px system-ui, sans-serif'; ctx.textAlign = 'center';
-    ctx.fillText(charges[i], b.x + b.r * 0.72, b.y - b.r * 0.72 + 1);
+    ctx.fillText(p.charges[i], b.x + b.r * 0.72, b.y - b.r * 0.72 + 1);
     if (!isTouch) label(a.keys[0], b.x - b.r * 0.72, b.y - b.r * 0.72, 11, 'rgba(255,255,255,0.6)', 'center');
   });
 }
@@ -2134,6 +2299,7 @@ function drawGem(x, y, s) {
 function drawShop() {
   ctx.fillStyle = 'rgba(8,6,16,0.9)'; ctx.fillRect(0, 0, sw, sh);
   label('UPGRADE SHOP', sw / 2, safe.t + 20, 22, '#ffe066', 'center');
+  const credits = Math.floor(me.credits);
   const ct = `${credits}`;
   ctx.font = 'bold 17px system-ui, sans-serif';
   const tw = ctx.measureText(ct).width;
@@ -2148,26 +2314,28 @@ function drawShop() {
     rrect(t.x, t.y, t.w, t.h, 8); ctx.fill();
     outline(on ? '#ffe066' : 'rgba(255,255,255,0.18)', on ? 2 : 1);
     label(t.label, t.x + t.w / 2, t.y + 11, 13, on ? '#ffe066' : '#fff', 'center');
-    label(t.sub, t.x + t.w / 2, t.y + 23, 10, 'rgba(255,255,255,0.6)', 'center', 'normal');
+    label(t.id === 'gear' ? `next round · ${buffTime()}s each` : t.sub, t.x + t.w / 2, t.y + 23, 10, 'rgba(255,255,255,0.6)', 'center', 'normal');
   }
 
-  const hasGun = GEAR.some(o => o.gun && gear.has(o.id));
+  const hasGun = GEAR.some(o => o.gun && me.gear.includes(o.id));
   for (const c of shopCards) {
     let title, desc, icon, cost = 0, can = false, maxed = false, pips = null, owned = false;
     if (c.kind === 'go') {
       ctx.fillStyle = c.flash > 0 ? '#9dff8a' : '#2fa84f';
       rrect(c.x, c.y, c.w, c.h, 10); ctx.fill();
       outline('#7CFC00', 2);
-      label('NEXT ROUND ▶', c.x + c.w / 2, c.y + c.h / 2, Math.min(18, c.w / 9), '#fff', 'center');
+      const nReady = players.filter(o => o.ready).length;
+      const txt = players.length < 2 ? 'NEXT ROUND ▶' : me.ready ? `WAITING ${nReady}/${players.length}` : `READY ▶ (${nReady}/${players.length})`;
+      label(txt, c.x + c.w / 2, c.y + c.h / 2, Math.min(18, c.w / 9), '#fff', 'center');
       continue;
     }
     if (c.kind === 'heal') {
       title = 'MED KIT'; desc = 'Refill all hearts'; icon = '❤️';
-      cost = healCost(); can = credits >= cost && player.hp < player.maxHp;
+      cost = healCost(); can = credits >= cost && me.hp < me.maxHp;
     } else if (c.kind === 'gear') {
       const g = c.g;
       title = g.name; desc = g.desc; icon = g.icon;
-      owned = gear.has(g.id); cost = gearCost(g);
+      owned = me.gear.includes(g.id); cost = gearCost(g);
       if (!g.once) desc += ` (${buffTime()}s)`;
       can = !owned && !(g.gun && hasGun) && credits >= cost;
     } else {
@@ -2278,6 +2446,7 @@ function drawCenterPanel(lines) {
 }
 
 function render() {
+  uiButtons = []; uiState = state;
   ctx.setTransform(1, 0, 0, 1, 0, 0);
   ctx.fillStyle = '#0d0b18'; ctx.fillRect(0, 0, canvas.width, canvas.height);
 
@@ -2285,12 +2454,13 @@ function render() {
   const k = scale * dpr;
   ctx.setTransform(k, 0, 0, k, (offX + sx * scale) * dpr, (offY + sy * scale) * dpr);
   drawArena();
-  if (state !== 'title' && state !== 'notes') {
+  if (state !== 'title' && state !== 'notes' && state !== 'lobby' && state !== 'join') {
     drawHazards();
     drawPickups();
     for (const e of enemies) drawEnemy(e);
-    drawPlayer();
-    drawGearFx();
+    for (const p of players) if (p !== me) drawPlayer(p);
+    if (me) drawPlayer(me);
+    for (const p of players) drawGearFx(p);
     drawShots();
     drawFx();
     if (twist === 'lights' && state === 'play' && roundPhase !== 'clear') drawDarkness();
@@ -2324,25 +2494,9 @@ function render() {
     return;
   }
 
-  if (state === 'title') {
-    const pulse = 0.6 + 0.4 * Math.sin(time * 4);
-    drawCenterPanel([
-      { text: 'ARENA BLITZ', size: Math.min(64, sw / 10), color: '#ff3df0' },
-      { text: 'Survive the arena. Blast everything.', size: 15, color: '#9be7ff', weight: 'normal' },
-      { gap: 24 },
-      { text: isTouch ? 'TAP TO START' : 'CLICK OR PRESS ENTER', size: 22, color: `rgba(255,224,102,${pulse})` },
-      { gap: 20 },
-      { text: isTouch ? 'Left thumb: move  ·  Right thumb: aim  ·  Gun fires automatically'
-                      : 'WASD: move  ·  Mouse / Arrows: aim  ·  Gun fires automatically', size: 13, color: '#ccc', weight: 'normal' },
-      { text: isTouch ? 'Tap BLAST · MISSILES · BLADES for power attacks — they recharge every round'
-                      : '1 / 2 / 3 (or Q / E / R): power attacks — they recharge every round', size: 13, color: '#ccc', weight: 'normal' },
-      { text: 'Earn ◆ from kills and clean rounds — spend them in the upgrade shop every 2 rounds', size: 13, color: '#4dfff0', weight: 'normal' },
-      { gap: 14 },
-      { text: best ? `BEST ${best.toLocaleString()}` : '', size: 14, color: '#ffd43b' },
-    ]);
-    if (runningVersion) label(`v${runningVersion}`, safe.l + 12, sh - safe.b - 14, 12, 'rgba(255,255,255,0.45)', 'left', 'normal');
-    return;
-  }
+  if (state === 'title') { drawTitle(); return; }
+  if (state === 'lobby') { drawLobby(); return; }
+  if (state === 'join') return;
 
   if (state === 'shop') { drawShop(); return; }
 
@@ -2362,31 +2516,41 @@ function render() {
   if (paused && state === 'play') {
     drawCenterPanel([
       { text: 'PAUSED', size: 42, color: '#33ccff' },
-      { text: isTouch ? 'Tap to resume' : 'Click or press P to resume', size: 16, color: '#ccc', weight: 'normal' },
+      { text: net.role !== 'solo' ? 'Paused for everyone · tap to resume' : isTouch ? 'Tap to resume' : 'Click or press P to resume', size: 16, color: '#ccc', weight: 'normal' },
     ]);
+    if (net.role !== 'solo') uiButton(net.role === 'host' ? 'END GAME' : 'LEAVE', sw / 2, sh * 0.72, 160, 44, '#a83232', () => leaveGame());
   }
 
   if (state === 'over' && overT > 0.8) {
     drawCenterPanel([
       { text: 'GAME OVER', size: 48, color: '#ff4466' },
-      { text: `Reached round ${round}`, size: 16, color: '#ccc', weight: 'normal' },
+      { text: players.length > 1 ? `Your team reached round ${round}` : `Reached round ${round}`, size: 16, color: '#ccc', weight: 'normal' },
       { gap: 10 },
       { text: `SCORE ${score.toLocaleString()}`, size: 26 },
       { text: newBest ? 'NEW BEST!' : `BEST ${best.toLocaleString()}`, size: 16, color: '#ffd43b' },
       { gap: 20 },
-      { text: overT > 1 ? (isTouch ? 'TAP TO PLAY AGAIN' : 'CLICK OR PRESS ENTER') : '', size: 20, color: '#ffe066' },
-      { text: updateReady ? `Update ready: v${latestVersion} installs when you continue` : '', size: 13, color: '#7CFC00', weight: 'normal' },
+      { text: net.role === 'guest' ? 'Waiting for the host to start again…' : net.role === 'host' ? '' : overT > 1 ? (isTouch ? 'TAP TO PLAY AGAIN' : 'CLICK OR PRESS ENTER') : '', size: 20, color: '#ffe066' },
+      { text: updateReady && net.role === 'solo' ? `Update ready: v${latestVersion} installs when you continue` : '', size: 13, color: '#7CFC00', weight: 'normal' },
     ]);
+    if (net.role === 'host' && overT > 1) {
+      uiButton('PLAY AGAIN', sw / 2 - 85, sh * 0.84, 150, 44, '#2fa84f', () => newGame());
+      uiButton('LEAVE', sw / 2 + 85, sh * 0.84, 150, 44, '#444', () => leaveGame());
+    } else if (net.role === 'guest') uiButton('LEAVE', sw / 2, sh * 0.84, 150, 44, '#444', () => leaveGame());
   }
 }
 
 // ---------------------------------------------------------------- loop
 let last = performance.now();
 function frame(now) {
-  const dt = Math.min(0.033, (now - last) / 1000);
+  tick(Math.min(0.033, (now - last) / 1000));
   last = now;
+  requestAnimationFrame(frame);
+}
+
+function tick(dt) {
   const portrait = isTouch && sh > sw;
-  if (state === 'play' && !paused && !portrait && !window.__freeze) update(dt);
+  if (net.role === 'guest') guestFrame(dt);
+  else if (state === 'play' && !paused && !portrait && !window.__freeze) update(dt);
   else if (state === 'over') { overT += dt; time += dt; updateFx(dt); }
   else if (state === 'shop') {
     time += dt;
@@ -2394,8 +2558,394 @@ function frame(now) {
     if (shopMsg && (shopMsg.t -= dt) <= 0) shopMsg = null;
   }
   else time += dt;
+  if (net.role === 'host' && (net.sendT -= dt) <= 0) { net.sendT = 0.05; hostBroadcast(); }
   render();
-  requestAnimationFrame(frame);
+}
+
+// ---------------------------------------------------------------- multiplayer
+// One phone hosts and runs the real game; friends join with a 4-letter code. PeerJS (a free
+// matchmaking service) only introduces the phones, then they talk to each other directly.
+// Each phone moves its own player (so controls feel instant) and the host sends everyone a
+// snapshot of the arena 20 times a second, plus a copy of every shot, sound and spark.
+const net = { role: 'solo', peer: null, code: '', peers: new Map(), host: null, sendT: 0, inT: 0 };
+const MAX_PLAYERS = 4;
+const roomId = code => 'arenablitz-room-' + code.toLowerCase();
+const r1 = v => Math.round(v * 10) / 10, r2 = v => Math.round(v * 100) / 100;
+let titleMsg = '', uiButtons = [], uiState = '';
+
+function loadPeerJs() {
+  if (window.Peer) return Promise.resolve();
+  return new Promise((res, rej) => {
+    const sc = document.createElement('script');
+    sc.src = 'https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js';
+    sc.onload = () => window.Peer ? res() : rej(new Error('no Peer'));
+    sc.onerror = () => { sc.remove(); rej(new Error('load failed')); };
+    document.head.appendChild(sc);
+  });
+}
+
+function netSend(msg) { if (net.host && net.host.open) net.host.send(msg); }
+function sendTo(pid, msg) { for (const g of net.peers.values()) if (g.pid === pid && g.conn.open) g.conn.send(msg); }
+
+// Back to the title screen, closing any connection.
+function leaveGame(msg = '') {
+  const pr = net.peer;
+  net.role = 'solo'; net.peer = null; net.host = null; net.peers.clear(); net.code = '';
+  try { if (pr) pr.destroy(); } catch (e) {}
+  netOut = null;
+  players = []; me = null; boss = null;
+  enemies = []; bullets = []; ebullets = []; pickups = []; missiles = []; effects = []; particles = []; texts = [];
+  pillars = []; mines = []; warps = []; strikes = []; puddles = [];
+  paused = false; banner = null; shake = 0; flash = 0;
+  state = 'title'; titleMsg = msg;
+  sticks.left = sticks.right = null;
+  showJoinBox(false);
+  if (updateReady) location.reload();
+}
+
+// ---- hosting
+function hostGame() {
+  if (net.peer) return;
+  titleMsg = 'Opening a room…';
+  loadPeerJs().then(() => {
+    const code = Array.from({ length: 4 }, () => 'ABCDEFGHJKMNPQRSTUVWXYZ'[randi(0, 22)]).join('');
+    const peer = new Peer(roomId(code));
+    net.peer = peer;
+    peer.on('open', () => {
+      if (net.peer !== peer) return;
+      net.role = 'host'; net.code = code; netOut = [];
+      players = [makePlayer(0)]; me = players[0];
+      state = 'lobby'; titleMsg = '';
+    });
+    peer.on('connection', conn => conn.on('open', () => addGuest(conn)));
+    peer.on('disconnected', () => { if (net.peer === peer) try { peer.reconnect(); } catch (e) {} });
+    peer.on('error', err => {
+      if (net.peer !== peer) return;
+      if (err.type === 'unavailable-id') { net.peer = null; peer.destroy(); hostGame(); return; }   // code taken: pick another
+      if (net.role !== 'host') { net.peer = null; peer.destroy(); titleMsg = `Couldn't open a room (${err.type}). Check your internet.`; }
+    });
+  }).catch(() => { titleMsg = "Couldn't load multiplayer. Check your internet."; });
+}
+
+function addGuest(conn) {
+  if (net.role !== 'host') { conn.close(); return; }
+  if (players.length >= MAX_PLAYERS) { conn.send(['bye', 'That room is full (4 players max)']); setTimeout(() => conn.close(), 500); return; }
+  const pid = [1, 2, 3].find(i => !players.some(o => o.pid === i));
+  const p = makePlayer(pid);
+  if (state !== 'lobby') {   // jumped in mid-game: sits out until the next round, with some ◆ to catch up
+    p.down = true; p.joining = true; p.credits = 15 * round;
+    addText(W / 2, H / 2 - 60, `${pname(p)} JOINED! In from the next round`, PCOL[pid].tag, 18, 2.2);
+  }
+  players.push(p); players.sort((a, b) => a.pid - b.pid);
+  net.peers.set(conn.peer, { conn, pid });
+  conn.send(['hi', pid, net.code, runningVersion]);
+  conn.on('data', d => fromGuest(pid, d));
+  const gone = () => dropGuest(conn.peer);
+  conn.on('close', gone); conn.on('error', gone);
+}
+
+function dropGuest(id) {
+  const g = net.peers.get(id);
+  if (!g) return;
+  net.peers.delete(id);
+  const p = players.find(o => o.pid === g.pid);
+  players = players.filter(o => o.pid !== g.pid);
+  if (p && state === 'play') addText(p.x, p.y - 30, `${pname(p)} LEFT`, '#aaa', 16, 1.6);
+  if (state === 'play' && players.every(o => o.down)) gameOver();
+  checkAllReady();
+}
+
+function fromGuest(pid, d) {
+  const p = players.find(o => o.pid === pid);
+  if (!p || !Array.isArray(d)) return;
+  switch (d[0]) {
+    case 'i':   // where they are and where they're aiming
+      p.x = clamp(+d[1] || 0, WALL, W - WALL); p.y = clamp(+d[2] || 0, WALL, H - WALL);
+      p.ax = d[3] / 100 || 0; p.ay = d[4] / 100 || 0; p.moving = !!d[5]; p.walk = d[6] / 10 || 0;
+      break;
+    case 'a': useAbility(d[1] | 0, p); break;
+    case 'buy': if (state === 'shop') sendTo(pid, ['say', buyFor(p, d[1], d[2])]); break;
+    case 'p': if (state === 'play') paused = !paused; break;
+  }
+}
+
+function hostBroadcast() {
+  if (!net.peers.size) { netOut.length = 0; return; }
+  const msg = ['s', snapshot()];
+  for (const g of net.peers.values()) if (g.conn.open) { try { g.conn.send(msg); } catch (e) {} }
+}
+
+function encPlayer(p) {
+  return {
+    pid: p.pid, x: Math.round(p.x), y: Math.round(p.y), ax: r2(p.ax), ay: r2(p.ay), hp: p.hp, maxHp: p.maxHp, inv: r1(p.inv),
+    weapon: p.weapon, weaponT: r1(p.weaponT), weaponMax: p.weaponMax, shield: p.shield, blades: r1(p.blades),
+    walk: r1(p.walk), moving: p.moving, muzzle: p.muzzle > 0 ? 0.05 : 0, down: p.down, joining: p.joining, credits: Math.floor(p.credits),
+    levels: p.levels, charges: p.charges, gear: p.gear, buffMax: p.buffMax, ready: p.ready, flawless: p.flawless,
+    buffs: { shield: r1(p.buffs.shield), drone: r1(p.buffs.drone), gems: r1(p.buffs.gems) },
+  };
+}
+
+function snapshot() {
+  const fx = netOut; netOut = [];
+  return {
+    st: state, ph: roundPhase, rd: round, sc: score, cb: combo, tw: twist, th: themeIdx, pz: paused, n: nPlayers,
+    left: spawnQueue.length + warps.length + enemies.length, bn: banner, df: doors.map(d => r1(d.flash)),
+    pl: players.map(encPlayer),
+    en: enemies.filter(e => !e.dead).map(e => [e.id, e.type, e.kind || 0, Math.round(e.x), Math.round(e.y), r1(e.r), r1(e.hp), e.maxHp,
+      e.hitT > 0 ? 1 : 0, r2(e.face), r1(e.t), r2(e.wob), r1(e.fireT), e.mode || 0, e.entering ? 1 : 0, r2(e.cdx || 0), r2(e.cdy || 0)]),
+    eb: ebullets.map(b => [Math.round(b.x), Math.round(b.y), Math.round(b.vx), Math.round(b.vy), b.color || 0]),
+    mi: missiles.map(m => [Math.round(m.x), Math.round(m.y), r2(m.a), Math.round(m.speed)]),
+    ef: effects.map(f => [Math.round(f.x), Math.round(f.y), Math.round(f.r), f.max]),
+    pk: pickups.map(k => [k.type, Math.round(k.x), Math.round(k.y), r1(k.life), r1(k.t)]),
+    pi: pillars.map(c => [Math.round(c.x), Math.round(c.y), c.r, r2(c.rise)]),
+    mn: mines.map(m => [Math.round(m.x), Math.round(m.y), r2(m.fuse), r1(m.t)]),
+    wp: warps.map(w => [Math.round(w.x), Math.round(w.y), r2(w.t)]),
+    sk: strikes.map(k => [Math.round(k.x), Math.round(k.y), k.r, r2(k.t), k.max, k.color]),
+    pd: puddles.map(k => [Math.round(k.x), Math.round(k.y), r1(k.r), r2(k.life), k.max]),
+    fx,
+  };
+}
+
+// ---- joining
+function joinGame(code) {
+  code = (code || '').toUpperCase().replace(/[^A-Z]/g, '');
+  if (code.length !== 4) { joinSay('Enter the 4-letter code from the host'); return; }
+  if (net.peer) return;
+  joinSay('Connecting…', '#ffe066');
+  loadPeerJs().then(() => {
+    const peer = new Peer();
+    net.peer = peer;
+    const timer = setTimeout(() => {
+      if (net.peer === peer && net.role !== 'guest') { net.peer = null; peer.destroy(); joinSay("Couldn't reach that room. Check the code and try again."); }
+    }, 15000);
+    peer.on('open', () => {
+      if (net.peer !== peer) return;
+      const conn = peer.connect(roomId(code), { reliable: true, serialization: 'json' });
+      net.host = conn;
+      conn.on('data', d => fromHost(d, code));
+      const lost = () => { if (net.host === conn && net.role === 'guest') leaveGame('Lost connection to the host'); };
+      conn.on('close', lost); conn.on('error', lost);
+    });
+    peer.on('error', err => {
+      if (net.peer !== peer || net.role === 'guest') return;   // once in, only the link to the host matters
+      clearTimeout(timer); net.peer = null; peer.destroy();
+      joinSay(err.type === 'peer-unavailable' ? 'No room with that code. Check it and try again.' : `Couldn't connect (${err.type})`);
+    });
+  }).catch(() => joinSay("Couldn't load multiplayer. Check your internet."));
+}
+
+function fromHost(d, code) {
+  if (!Array.isArray(d)) return;
+  if (d[0] === 'hi') {
+    if (d[3] && runningVersion && d[3] !== runningVersion) {
+      leaveGame(`Different game versions (you ${runningVersion}, host ${d[3]}). Reopen the game on both phones to update.`);
+      return;
+    }
+    net.role = 'guest'; net.code = code; netOut = null;
+    me = makePlayer(d[1]); players = [me];
+    state = 'lobby'; showJoinBox(false);
+  } else if (d[0] === 'bye') leaveGame(d[1]);
+  else if (d[0] === 'say') buyResult(d[1]);
+  else if (d[0] === 's' && net.role === 'guest') applySnapshot(d[1]);
+}
+
+const MINE_ONLY = ['x', 'y', 'ax', 'ay', 'moving', 'walk'];   // this phone is in charge of these for its own player
+function applySnapshot(s) {
+  const was = state;
+  state = s.st; roundPhase = s.ph; round = s.rd; score = s.sc; combo = s.cb; twist = s.tw; paused = s.pz; nPlayers = s.n;
+  enemiesLeft = s.left; banner = s.bn;
+  if (s.th !== themeIdx) setTheme(s.th);
+  s.df.forEach((f, i) => { doors[i].flash = f; });
+  const fresh = state === 'play' && was !== 'play' && was !== 'shop';   // a new game: take the host's starting spot
+  players = s.pl.map(o => {
+    let p = o.pid === me.pid ? me : players.find(q => q.pid === o.pid);
+    if (!p) { p = makePlayer(o.pid); p.x = o.x; p.y = o.y; }
+    for (const k in o) {
+      if (k === 'pid') continue;
+      if (p === me && !fresh && MINE_ONLY.includes(k)) continue;
+      if (p !== me && (k === 'x' || k === 'y')) continue;
+      p[k] = o[k];
+    }
+    if (p !== me) { p.tx = o.x; p.ty = o.y; }
+    return p;
+  });
+  const old = new Map(enemies.map(e => [e.id, e]));
+  enemies = s.en.map(a => {
+    const e = old.get(a[0]) || { id: a[0], x: a[3], y: a[4], kx: 0, ky: 0 };
+    [, e.type, e.kind, e.tx, e.ty, e.r, e.hp, e.maxHp, e.hitT, e.face, e.t, e.wob, e.fireT, e.mode, e.entering, e.cdx, e.cdy] = a;
+    e.kind = e.kind || undefined; e.mode = e.mode || undefined; e.entering = !!e.entering; e.hitT = e.hitT ? 0.07 : 0;
+    e.color = e.type === 'boss' ? (BOSSES.find(b => b.id === e.kind) || BOSSES[0]).color : ETYPES[e.type].color;
+    return e;
+  });
+  boss = enemies.find(e => e.type === 'boss') || null;
+  ebullets = s.eb.map(a => ({ x: a[0], y: a[1], vx: a[2], vy: a[3], color: a[4] || undefined, r: 6, life: 5 }));
+  missiles = s.mi.map(a => ({ x: a[0], y: a[1], a: a[2], speed: a[3] }));
+  effects = s.ef.map(a => ({ x: a[0], y: a[1], r: a[2], max: a[3] }));
+  pickups = s.pk.map(a => ({ type: a[0], x: a[1], y: a[2], life: a[3], t: a[4] }));
+  pillars = s.pi.map(a => ({ x: a[0], y: a[1], r: a[2], rise: a[3] }));
+  mines = s.mn.map(a => ({ x: a[0], y: a[1], fuse: a[2], t: a[3] }));
+  warps = s.wp.map(a => ({ x: a[0], y: a[1], t: a[2] }));
+  strikes = s.sk.map(a => ({ x: a[0], y: a[1], r: a[2], t: a[3], max: a[4], color: a[5] }));
+  puddles = s.pd.map(a => ({ x: a[0], y: a[1], r: a[2], life: a[3], max: a[4] }));
+  for (const f of s.fx) replayFx(f);
+  if (state !== was) sticks.left = sticks.right = null;
+  if (state === 'shop' && was !== 'shop') { shopMsg = null; bullets = []; layoutShop(); }
+  if (state === 'over' && was !== 'over') {
+    overT = 0; newBest = false;
+    if (score > best) { best = score; newBest = true; store.set('arena_best', best); }
+  }
+}
+
+// Play back what happened on the host: sparks, floating text, sounds, shakes and shots.
+function replayFx(f) {
+  const mine = pid => pid === -1 || pid === me.pid;
+  switch (f[0]) {
+    case 'b': burst(f[1], f[2], f[3], f[4], f[5], f[6]); break;
+    case 't': addText(f[1], f[2], f[3], f[4], f[5], f[6]); break;
+    case 's': if (Sound[f[1]]) Sound[f[1]](...f[2]); break;
+    case 'k': if (mine(f[2])) shake = Math.max(shake, f[1]); break;
+    case 'f': if (mine(f[3])) { flash = f[1]; flashColor = f[2]; } break;
+    case 'v': if (mine(f[2])) vibrate(f[1]); break;
+    case 'B': bullets.push({ x: f[1], y: f[2], vx: f[3], vy: f[4], pierce: f[5], color: f[6], life: f[7], r: f[8], hits: null }); break;
+  }
+}
+
+// A guest's frame: move yourself, tell the host, and smoothly animate everything else between snapshots.
+function guestFrame(dt) {
+  time += dt;
+  const playing = state === 'play' && !paused;
+  if (playing && !(isTouch && sh > sw)) moveLocal(me, dt);
+  if (state === 'play' && (net.inT -= dt) <= 0) {
+    net.inT = 1 / 30;
+    netSend(['i', Math.round(me.x), Math.round(me.y), Math.round(me.ax * 100), Math.round(me.ay * 100), me.moving ? 1 : 0, Math.round(me.walk * 10)]);
+  }
+  if (state === 'over') overT += dt;
+  if (state === 'shop') {
+    for (const c of shopCards) if (c.flash > 0) c.flash -= dt;
+    if (shopMsg && (shopMsg.t -= dt) <= 0) shopMsg = null;
+  }
+  updateFx(dt);
+  for (let i = 0; i < btnPress.length; i++) if (btnPress[i] > 0) btnPress[i] -= dt;
+  if (!playing) return;
+  const k = Math.min(1, dt * 14);
+  for (const p of players) {
+    p.drone.a += dt * 2.2;
+    if (p.blades > 0) p.bladeA += dt * 7;
+    if (p === me) continue;
+    if (p.tx !== undefined) { p.x += (p.tx - p.x) * k; p.y += (p.ty - p.y) * k; }
+    if (p.moving) p.walk += dt * 13;
+  }
+  for (const e of enemies) { e.x += (e.tx - e.x) * k; e.y += (e.ty - e.y) * k; e.t += dt; if (e.hitT > 0) e.hitT -= dt; }
+  for (const b of ebullets) { b.x += b.vx * dt; b.y += b.vy * dt; }
+  for (const m of missiles) {
+    m.x += Math.cos(m.a) * m.speed * dt; m.y += Math.sin(m.a) * m.speed * dt;
+    particles.push({ x: m.x, y: m.y, vx: rand(-20, 20), vy: rand(-20, 20), life: 0.3, max: 0.3, color: '#9be7ff', size: 3 });
+  }
+  for (const f of effects) f.r = Math.min(f.max, f.r + 1050 * dt);
+  for (const pk of pickups) { pk.t += dt; pk.life -= dt; }
+  for (const m of mines) m.t += dt;
+  for (const w of warps) w.t -= dt;
+  for (const st of strikes) st.t = Math.max(0, st.t - dt);
+  for (const pd of puddles) pd.life -= dt;
+  for (const c of pillars) c.rise = Math.min(1, c.rise + dt * 3);
+  for (const d of doors) d.flash = Math.max(0, d.flash - dt);
+  // our copy of everyone's shots is just for show; the host decides what they hit
+  for (const b of bullets) {
+    b.x += b.vx * dt; b.y += b.vy * dt; b.life -= dt;
+    if (b.life <= 0 || !inArena(b.x, b.y) || inPillar(b.x, b.y)) { b.dead = true; continue; }
+    for (const e of enemies) {
+      if (d2(e.x, e.y, b.x, b.y) >= (e.r + b.r) ** 2 || (b.hits && b.hits.includes(e))) continue;
+      if (b.pierce > 0) { b.pierce--; (b.hits || (b.hits = [])).push(e); } else { b.dead = true; break; }
+    }
+  }
+  bullets = bullets.filter(b => !b.dead);
+}
+
+// ---- the join screen is a real text box, so phones bring up their keyboard
+const joinBox = document.createElement('div');
+joinBox.style.cssText = 'position:fixed;inset:0;display:none;align-items:center;justify-content:center;background:rgba(8,6,16,0.9);' +
+  'z-index:5;font-family:system-ui,sans-serif;color:#fff;text-align:center';
+const jbtn = bg => `font:bold 17px system-ui,sans-serif;color:#fff;background:${bg};border:2px solid rgba(255,255,255,0.35);border-radius:12px;padding:10px 22px`;
+joinBox.innerHTML = `<div style="padding:20px;max-width:360px">
+  <div style="font-weight:bold;font-size:22px;color:#ffe066;margin-bottom:6px">JOIN A FRIEND</div>
+  <div style="font-size:14px;color:#ccc;margin-bottom:14px">Type the 4-letter code on the host's screen</div>
+  <input id="joinCode" maxlength="4" autocomplete="off" autocorrect="off" autocapitalize="characters" spellcheck="false"
+    style="font:bold 32px system-ui,sans-serif;width:160px;text-align:center;letter-spacing:8px;text-transform:uppercase;padding:8px;
+    border-radius:10px;border:2px solid #33ccff;background:#17142a;color:#fff;-webkit-user-select:text;user-select:text">
+  <div style="margin-top:14px;display:flex;gap:10px;justify-content:center">
+    <button id="joinGo" style="${jbtn('#2fa84f')}">JOIN</button><button id="joinBack" style="${jbtn('#444')}">BACK</button>
+  </div>
+  <div id="joinMsg" style="margin-top:12px;font-size:14px;min-height:18px"></div></div>`;
+document.body.appendChild(joinBox);
+const joinInput = joinBox.querySelector('#joinCode'), joinMsgEl = joinBox.querySelector('#joinMsg');
+joinBox.querySelector('#joinGo').onclick = () => joinGame(joinInput.value);
+joinBox.querySelector('#joinBack').onclick = () => leaveGame();
+joinInput.addEventListener('keydown', e => { e.stopPropagation(); if (e.key === 'Enter') joinGame(joinInput.value); });
+function joinSay(t, color = '#ff6b6b') { joinMsgEl.textContent = t; joinMsgEl.style.color = color; }
+function showJoinBox(on) {
+  joinBox.style.display = on ? 'flex' : 'none';
+  if (on) { joinSay(''); joinInput.value = ''; setTimeout(() => joinInput.focus(), 50); } else joinInput.blur();
+}
+
+// Buttons drawn on the canvas (title, lobby, pause, game over). Rebuilt every frame.
+function uiButton(text, cx, cy, w, h, color, action) {
+  const x = cx - w / 2, y = cy - h / 2;
+  ctx.fillStyle = color; rrect(x, y, w, h, 12); ctx.fill();
+  outline('rgba(255,255,255,0.35)', 2);
+  label(text, cx, cy, Math.min(18, w / 7), '#fff', 'center');
+  uiButtons.push({ x, y, w, h, action });
+}
+
+function drawTitle() {
+  ctx.fillStyle = 'rgba(8,6,16,0.72)'; ctx.fillRect(0, 0, sw, sh);
+  const cx = sw / 2;
+  label('ARENA BLITZ', cx, sh * 0.15, Math.min(56, sw / 11), '#ff3df0', 'center');
+  label('Survive the arena. Blast everything.', cx, sh * 0.15 + 36, 15, '#9be7ff', 'center', 'normal');
+  const bw = Math.min(190, (sw - safe.l - safe.r - 60) / 3), by = sh * 0.4;
+  uiButton('PLAY SOLO', cx - bw - 12, by, bw, 52, '#2fa84f', () => { goFullscreen(); newGame(); });
+  uiButton('HOST GAME', cx, by, bw, 52, '#2563c9', () => { goFullscreen(); hostGame(); });
+  uiButton('JOIN GAME', cx + bw + 12, by, bw, 52, '#8a3ccc', () => { goFullscreen(); titleMsg = ''; state = 'join'; showJoinBox(true); });
+  if (titleMsg) label(titleMsg, cx, by + 44, 14, titleMsg.endsWith('…') ? '#ffe066' : '#ff6b6b', 'center');
+  const lines = [
+    isTouch ? 'Left thumb: move  ·  Right thumb: aim  ·  Gun fires automatically' : 'WASD: move  ·  Mouse / Arrows: aim  ·  Gun fires automatically',
+    isTouch ? 'Tap BLAST · MISSILES · BLADES for power attacks — they recharge every round' : '1 / 2 / 3 (or Q / E / R): power attacks — they recharge every round',
+    'Earn ◆ from kills and clean rounds — spend them in the upgrade shop every 2 rounds',
+    'Play with up to 3 friends: one phone taps HOST GAME, the others JOIN with its code',
+  ];
+  lines.forEach((t, i) => label(t, cx, sh * 0.6 + i * 20, 13, i === 2 ? '#4dfff0' : '#ccc', 'center', 'normal'));
+  if (best) label(`BEST ${best.toLocaleString()}`, cx, sh * 0.6 + lines.length * 20 + 14, 14, '#ffd43b', 'center');
+  if (runningVersion) label(`v${runningVersion}`, safe.l + 12, sh - safe.b - 14, 12, 'rgba(255,255,255,0.45)', 'left', 'normal');
+}
+
+function drawLobby() {
+  ctx.fillStyle = 'rgba(8,6,16,0.8)'; ctx.fillRect(0, 0, sw, sh);
+  const cx = sw / 2, host = net.role === 'host';
+  if (host) {
+    label('ROOM CODE', cx, sh * 0.13, 15, '#9be7ff', 'center');
+    label(net.code, cx, sh * 0.13 + 40, 48, '#ffe066', 'center');
+    label('Friends tap JOIN GAME and type this code', cx, sh * 0.13 + 78, 14, '#ccc', 'center', 'normal');
+  } else {
+    label(`ROOM ${net.code}`, cx, sh * 0.16, 30, '#ffe066', 'center');
+    label('Waiting for the host to start…', cx, sh * 0.16 + 36, 15, '#ccc', 'center', 'normal');
+  }
+  const gap = Math.min(150, (sw - 40) / Math.max(1, players.length)), y = sh * 0.5;
+  players.forEach((p, i) => {
+    const x = cx + (i - (players.length - 1) / 2) * gap;
+    circle(x, y - 6, 16, PCOL[p.pid].main);
+    label(pname(p) + (p === me ? ' (you)' : ''), x, y + 24, 14, PCOL[p.pid].tag, 'center');
+  });
+  label(players.length > 1 ? 'More players = more enemies and a tougher boss' : 'Waiting for friends to join (you can also start alone)',
+    cx, y + 52, 13, 'rgba(255,255,255,0.6)', 'center', 'normal');
+  if (host) {
+    uiButton('START', cx - 85, sh * 0.8, 150, 50, '#2fa84f', () => newGame());
+    uiButton('BACK', cx + 85, sh * 0.8, 150, 50, '#444', () => leaveGame());
+  } else uiButton('LEAVE', cx, sh * 0.8, 150, 50, '#444', () => leaveGame());
+}
+
+function togglePause() {
+  sticks.left = sticks.right = null;
+  if (net.role === 'guest') netSend(['p']);
+  else paused = !paused;
 }
 
 // ---------------------------------------------------------------- version & auto-update
@@ -2424,8 +2974,8 @@ requestAnimationFrame(frame);
 
 // small hook for automated testing in a browser console
 window.__arena = { get state() { return state; }, get round() { return round; }, get score() { return score; },
-  get enemies() { return enemies.length; }, get enemyList() { return enemies; }, get player() { return player; }, startRound, useAbility, newGame,
-  get credits() { return credits; }, set credits(v) { credits = v; }, get levels() { return levels; },
+  get enemies() { return enemies.length; }, get enemyList() { return enemies; }, get player() { return me; }, get players() { return players; }, startRound, useAbility, newGame,
+  get credits() { return me.credits; }, set credits(v) { me.credits = v; }, get levels() { return me.levels; }, get net() { return net; },
   set round(v) { round = v; }, openShop, get twist() { return twist; }, set nextTwist(v) { forcedTwist = v; },
-  get pillars() { return pillars; }, get boss() { return boss; }, setTheme, get mines() { return mines; }, step: dt => { if (state === 'play') update(dt); }, spawn: (type, x, y) => enemies.push(makeEnemy(type, x, y)) };
+  get pillars() { return pillars; }, get boss() { return boss; }, setTheme, get mines() { return mines; }, step: dt => { if (state === 'play') update(dt); }, tick, hostGame, joinGame, spawn: (type, x, y) => enemies.push(makeEnemy(type, x, y)) };
 })();

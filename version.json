@@ -1,6 +1,17 @@
 {
-  "version": "1.6.1",
+  "version": "1.7.0",
   "releases": [
+    {
+      "version": "1.7.0",
+      "date": "Oct 16, 2026",
+      "notes": [
+        "Multiplayer! Play with up to 3 friends: HOST GAME on one phone, JOIN GAME with its code on the others",
+        "More players means more enemies, tougher enemies and a much tougher boss",
+        "Each player has their own hearts, powers, upgrades and gems",
+        "Go down and you're back next round; the game ends when the whole team is down",
+        "Solo play works just like before"
+      ]
+    },
     {
       "version": "1.6.1",
       "date": "Oct 16, 2026",
