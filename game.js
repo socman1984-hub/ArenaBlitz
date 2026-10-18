@@ -1018,9 +1018,10 @@ function moveLocal(p, dt) {
   if (keys['a']) mx -= 1;
   if (keys['d']) mx += 1;
   if (sticks.left) { mx = sticks.left.vx; my = sticks.left.vy; }
+  // One speed: any push past the small dead zone moves you full speed; only the direction counts.
   const ml = Math.hypot(mx, my);
-  if (ml > 1) { mx /= ml; my /= ml; }
   p.moving = ml > 0.12;
+  if (p.moving) { mx /= ml; my /= ml; }
   if (p.moving) {
     const spd = 235 * (1 + 0.1 * L(p, 'speed'));
     p.x += mx * spd * dt; p.y += my * spd * dt;

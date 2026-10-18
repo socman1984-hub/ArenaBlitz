@@ -1,6 +1,13 @@
 {
-  "version": "1.7.1",
+  "version": "1.7.2",
   "releases": [
+    {
+      "version": "1.7.2",
+      "date": "Oct 18, 2026",
+      "notes": [
+        "One movement speed: any push on the move stick goes full speed, in every direction"
+      ]
+    },
     {
       "version": "1.7.1",
       "date": "Oct 18, 2026",
