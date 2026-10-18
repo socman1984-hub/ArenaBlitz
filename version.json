@@ -1,6 +1,15 @@
 {
-  "version": "1.7.0",
+  "version": "1.7.1",
   "releases": [
+    {
+      "version": "1.7.1",
+      "date": "Oct 18, 2026",
+      "notes": [
+        "Multiplayer: after a game over the whole team stays together and the next game starts by itself in 10 seconds",
+        "Anyone can tap PLAY AGAIN to start sooner; LEAVE is now a small button in the corner",
+        "If a friend's phone loses the connection, it rejoins the same room on its own, no code needed"
+      ]
+    },
     {
       "version": "1.7.0",
       "date": "Oct 16, 2026",

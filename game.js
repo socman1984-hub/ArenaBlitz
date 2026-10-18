@@ -266,7 +266,7 @@ function newGame() {
   boss = null;
   twist = lastTwist = lastLayout = null; seen = new Set(['grunt']);
   score = 0; combo = 0; comboT = 0; shake = 0; flash = 0;
-  newBest = false;
+  newBest = false; againAsked = false;
   state = 'play'; paused = false;
   startRound(1);
 }
@@ -918,8 +918,9 @@ window.addEventListener('keydown', e => {
   if (state === 'notes' && (k === 'enter' || k === ' ')) { state = 'title'; return; }
   if (state === 'title' && (k === 'enter' || k === ' ')) { newGame(); return; }
   if (state === 'lobby' && k === 'enter' && net.role === 'host') { newGame(); return; }
-  if (state === 'over' && (k === 'enter' || k === ' ') && overT > 1 && net.role !== 'guest') {
-    if (updateReady && net.role === 'solo') location.reload(); else newGame();
+  if (state === 'over' && (k === 'enter' || k === ' ') && overT > 1) {
+    if (net.role !== 'solo') playAgain();
+    else if (updateReady) location.reload(); else newGame();
     return;
   }
   if (state === 'shop' && k === 'enter') { buy(shopCards[shopCards.length - 1]); return; }
@@ -2529,13 +2530,16 @@ function render() {
       { text: `SCORE ${score.toLocaleString()}`, size: 26 },
       { text: newBest ? 'NEW BEST!' : `BEST ${best.toLocaleString()}`, size: 16, color: '#ffd43b' },
       { gap: 20 },
-      { text: net.role === 'guest' ? 'Waiting for the host to start again…' : net.role === 'host' ? '' : overT > 1 ? (isTouch ? 'TAP TO PLAY AGAIN' : 'CLICK OR PRESS ENTER') : '', size: 20, color: '#ffe066' },
+      { text: net.role !== 'solo'
+          ? (overT > 1 ? (againAsked ? 'Starting…' : `Next game starts in ${Math.max(1, Math.ceil(AUTO_RESTART - overT))} — everyone stays in`) : '')
+          : overT > 1 ? (isTouch ? 'TAP TO PLAY AGAIN' : 'CLICK OR PRESS ENTER') : '', size: 18, color: '#ffe066' },
       { text: updateReady && net.role === 'solo' ? `Update ready: v${latestVersion} installs when you continue` : '', size: 13, color: '#7CFC00', weight: 'normal' },
     ]);
-    if (net.role === 'host' && overT > 1) {
-      uiButton('PLAY AGAIN', sw / 2 - 85, sh * 0.84, 150, 44, '#2fa84f', () => newGame());
-      uiButton('LEAVE', sw / 2 + 85, sh * 0.84, 150, 44, '#444', () => leaveGame());
-    } else if (net.role === 'guest') uiButton('LEAVE', sw / 2, sh * 0.84, 150, 44, '#444', () => leaveGame());
+    if (net.role !== 'solo' && overT > 1) {
+      // Every phone can restart; the whole room goes in together. LEAVE is small and out of the way.
+      uiButton('PLAY AGAIN', sw / 2, sh * 0.85, 190, 46, '#2fa84f', playAgain);
+      uiButton('LEAVE', sw - safe.r - 66, sh - safe.b - 30, 100, 36, '#444', () => leaveGame());
+    }
   }
 }
 
@@ -2551,7 +2555,10 @@ function tick(dt) {
   const portrait = isTouch && sh > sw;
   if (net.role === 'guest') guestFrame(dt);
   else if (state === 'play' && !paused && !portrait && !window.__freeze) update(dt);
-  else if (state === 'over') { overT += dt; time += dt; updateFx(dt); }
+  else if (state === 'over') {
+    overT += dt; time += dt; updateFx(dt);
+    if (net.role === 'host' && overT > AUTO_RESTART) newGame();
+  }
   else if (state === 'shop') {
     time += dt;
     for (const c of shopCards) if (c.flash > 0) c.flash -= dt;
@@ -2584,11 +2591,21 @@ function loadPeerJs() {
   });
 }
 
+// After a team game over the room restarts by itself, or sooner when anyone taps PLAY AGAIN.
+const AUTO_RESTART = 10;
+let againAsked = false;
+function playAgain() {
+  if (state !== 'over' || overT <= 1) return;
+  if (net.role === 'guest') { if (!againAsked) { againAsked = true; netSend(['again']); } }
+  else newGame();
+}
+
 function netSend(msg) { if (net.host && net.host.open) net.host.send(msg); }
 function sendTo(pid, msg) { for (const g of net.peers.values()) if (g.pid === pid && g.conn.open) g.conn.send(msg); }
 
 // Back to the title screen, closing any connection.
-function leaveGame(msg = '') {
+function leaveGame(msg = '', keepPage = false) {
+  if (!keepPage) rejoin = null;
   const pr = net.peer;
   net.role = 'solo'; net.peer = null; net.host = null; net.peers.clear(); net.code = '';
   try { if (pr) pr.destroy(); } catch (e) {}
@@ -2600,7 +2617,29 @@ function leaveGame(msg = '') {
   state = 'title'; titleMsg = msg;
   sticks.left = sticks.right = null;
   showJoinBox(false);
-  if (updateReady) location.reload();
+  if (updateReady && !keepPage) location.reload();
+}
+
+// A guest whose link to the host drops (phone slept, Wi-Fi blipped) rejoins the same room by itself,
+// so nobody has to type the code again.
+let rejoin = null;   // { code, tries }
+const REJOIN_TRIES = 6;
+function lostHost() {
+  const code = net.code;
+  leaveGame(`Connection lost. Rejoining room ${code}…`, true);
+  rejoin = { code, tries: 0 };
+  setTimeout(tryRejoin, 1000);
+}
+function tryRejoin() {
+  if (!rejoin || state !== 'title' || net.peer) { rejoin = null; return; }   // they moved on (solo, host, join box)
+  rejoin.tries++;
+  titleMsg = `Rejoining room ${rejoin.code}…`;
+  joinGame(rejoin.code);
+}
+function rejoinFailed(why) {
+  if (rejoin && rejoin.tries < REJOIN_TRIES) { setTimeout(tryRejoin, 2500); return true; }
+  if (rejoin) { titleMsg = `Couldn't get back into room ${rejoin.code}. ${why}`; rejoin = null; if (updateReady) location.reload(); return true; }
+  return false;
 }
 
 // ---- hosting
@@ -2666,6 +2705,7 @@ function fromGuest(pid, d) {
     case 'a': useAbility(d[1] | 0, p); break;
     case 'buy': if (state === 'shop') sendTo(pid, ['say', buyFor(p, d[1], d[2])]); break;
     case 'p': if (state === 'play') paused = !paused; break;
+    case 'again': playAgain(); break;
   }
 }
 
@@ -2716,22 +2756,26 @@ function joinGame(code) {
     const peer = new Peer();
     net.peer = peer;
     const timer = setTimeout(() => {
-      if (net.peer === peer && net.role !== 'guest') { net.peer = null; peer.destroy(); joinSay("Couldn't reach that room. Check the code and try again."); }
+      if (net.peer === peer && net.role !== 'guest') {
+        net.peer = null; peer.destroy();
+        if (!rejoinFailed('The host may have left.')) joinSay("Couldn't reach that room. Check the code and try again.");
+      }
     }, 15000);
     peer.on('open', () => {
       if (net.peer !== peer) return;
       const conn = peer.connect(roomId(code), { reliable: true, serialization: 'json' });
       net.host = conn;
       conn.on('data', d => fromHost(d, code));
-      const lost = () => { if (net.host === conn && net.role === 'guest') leaveGame('Lost connection to the host'); };
+      const lost = () => { if (net.host === conn && net.role === 'guest') lostHost(); };
       conn.on('close', lost); conn.on('error', lost);
     });
     peer.on('error', err => {
       if (net.peer !== peer || net.role === 'guest') return;   // once in, only the link to the host matters
       clearTimeout(timer); net.peer = null; peer.destroy();
+      if (rejoinFailed(err.type === 'peer-unavailable' ? 'The host may have left.' : 'Check your internet.')) return;
       joinSay(err.type === 'peer-unavailable' ? 'No room with that code. Check it and try again.' : `Couldn't connect (${err.type})`);
     });
-  }).catch(() => joinSay("Couldn't load multiplayer. Check your internet."));
+  }).catch(() => { if (!rejoinFailed('Check your internet.')) joinSay("Couldn't load multiplayer. Check your internet."); });
 }
 
 function fromHost(d, code) {
@@ -2742,6 +2786,7 @@ function fromHost(d, code) {
       return;
     }
     net.role = 'guest'; net.code = code; netOut = null;
+    rejoin = null; titleMsg = '';
     me = makePlayer(d[1]); players = [me];
     state = 'lobby'; showJoinBox(false);
   } else if (d[0] === 'bye') leaveGame(d[1]);
@@ -2790,6 +2835,7 @@ function applySnapshot(s) {
   for (const f of s.fx) replayFx(f);
   if (state !== was) sticks.left = sticks.right = null;
   if (state === 'shop' && was !== 'shop') { shopMsg = null; bullets = []; layoutShop(); }
+  if (state !== 'over') againAsked = false;
   if (state === 'over' && was !== 'over') {
     overT = 0; newBest = false;
     if (score > best) { best = score; newBest = true; store.set('arena_best', best); }
